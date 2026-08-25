@@ -41,6 +41,16 @@ YEAR_ID_RANGES = {
 }
 YEARS = list(YEAR_ID_RANGES.keys())
 
+ALL_METHODS = [
+    "123_method",
+    "321_method", 
+    "year_user",
+    "cross_user",
+    "double_user",
+    "4_number_method",
+    "2_number_method"
+]
+
 METHOD_CHOICES = [
     app_commands.Choice(name="123_method", value="123_method"),
     app_commands.Choice(name="321_method", value="321_method"),
@@ -107,6 +117,37 @@ def save_db():
             json.dump(db, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[ERROR] Database save error: {e}")
+
+def save_account_to_all_methods(account_data, account_year, matched_filter, is_offsale_account):
+    """Save account to ALL methods so any method query works"""
+    global db
+    added = False
+    
+    # Save to ALL methods
+    for method in ALL_METHODS:
+        gen_key = f"gen_{account_year}_{method}"
+        bulk_key = f"bulk_{account_year}_{method}"
+        
+        if gen_key not in db: db[gen_key] = []
+        if bulk_key not in db: db[bulk_key] = []
+        
+        if not any(acc['id'] == account_data['id'] for acc in db[gen_key]):
+            db[gen_key].append(account_data)
+            added = True
+        
+        if not any(acc['id'] == account_data['id'] for acc in db[bulk_key]):
+            db[bulk_key].append(account_data)
+            added = True
+        
+        # Off-sale
+        if is_offsale_account:
+            offsale_key = f"offsale_{account_year}_{method}"
+            if offsale_key not in db: db[offsale_key] = []
+            if not any(acc['id'] == account_data['id'] for acc in db[offsale_key]):
+                db[offsale_key].append(account_data)
+                added = True
+    
+    return added
 
 def get_accounts_from_db(prefix: str, year: str, method: str, limit: int = 1):
     key = f"{prefix}_{year}_{method}"
@@ -187,27 +228,8 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                 "avatarUrl": avatar_url
             }
 
-            added = False
-            gen_key = f"gen_{account_year}_{matched_filter}"
-            bulk_key = f"bulk_{account_year}_{matched_filter}"
-
-            if gen_key not in db: db[gen_key] = []
-            if bulk_key not in db: db[bulk_key] = []
-
-            if not any(acc['id'] == account_data['id'] for acc in db[gen_key]):
-                db[gen_key].append(account_data)
-                added = True
-
-            if not any(acc['id'] == account_data['id'] for acc in db[bulk_key]):
-                db[bulk_key].append(account_data)
-                added = True
-
-            if is_offsale_account:
-                offsale_key = f"offsale_{account_year}_{matched_filter}"
-                if offsale_key not in db: db[offsale_key] = []
-                if not any(acc['id'] == account_data['id'] for acc in db[offsale_key]):
-                    db[offsale_key].append(account_data)
-                    added = True
+            # Save to ALL methods
+            added = save_account_to_all_methods(account_data, account_year, matched_filter, is_offsale_account)
 
             if added:
                 pending_saves += 1
@@ -234,7 +256,7 @@ async def on_ready():
     print(f"[DISCORD] Logged in as {client.user}!")
 
 # ---------------------------------------------------------
-# DM MESSAGE HANDLER (TXT FILES)
+# DM MESSAGE HANDLER
 # ---------------------------------------------------------
 @client.event
 async def on_message(message):
@@ -289,7 +311,6 @@ async def on_message(message):
             await message.channel.send(f"❌ No accounts found for **{year}** and **{method}**!")
             return
 
-        # Create TXT
         content_txt = f"📦 {year} - {method} - {len(accounts)} Accounts\n"
         content_txt += "=" * 60 + "\n\n"
         
@@ -356,11 +377,38 @@ async def on_message(message):
         await message.channel.send("❌ Unknown command! Type `!help` for help.")
 
 # ---------------------------------------------------------
-# SLASH COMMANDS (Server)
+# SLASH COMMANDS
 # ---------------------------------------------------------
-@tree.command(name="get", description="Get accounts via DM as .txt file")
+@tree.command(name="gen", description="Get 1 account via DM")
 @app_commands.choices(method=METHOD_CHOICES)
-async def get_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str], amount: int = 5):
+async def gen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str]):
+    await interaction.response.send_message("✅ Sending account to your DM...", ephemeral=True)
+    
+    accounts = get_accounts_from_db("gen", year, method.value, 1)
+    
+    if not accounts:
+        await interaction.followup.send(f"❌ No accounts for **{year}** and **{method.value}**!", ephemeral=True)
+        return
+
+    acc = accounts[0]
+    
+    try:
+        embed = discord.Embed(title="🎮 Roblox Account", color=discord.Color.green())
+        embed.add_field(name="Username", value=f"`{acc['name']}`", inline=True)
+        embed.add_field(name="ID", value=f"`{acc['id']}`", inline=True)
+        embed.add_field(name="Created", value=acc['createdDate'], inline=True)
+        embed.add_field(name="Items", value=str(acc['itemCount']), inline=True)
+        embed.set_thumbnail(url=acc['avatarUrl'])
+        embed.set_footer(text=f"Filter: {method.value} | Year: {year}")
+        
+        await interaction.user.send(embed=embed)
+        await interaction.followup.send("✅ Account sent to your DM!", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ Open your DMs! Could not send account.", ephemeral=True)
+
+@tree.command(name="bulkgen", description="Get multiple accounts as .txt via DM")
+@app_commands.choices(method=METHOD_CHOICES)
+async def bulkgen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str], amount: int = 5):
     if amount > 50:
         amount = 50
         await interaction.response.send_message("⚠️ Max 50 accounts, reducing to 50!", ephemeral=True)
@@ -394,6 +442,51 @@ async def get_slash(interaction: discord.Interaction, year: str, method: app_com
         await interaction.followup.send("✅ Accounts sent to your DM!", ephemeral=True)
     except:
         await interaction.followup.send("❌ Open your DMs! Could not send file.", ephemeral=True)
+
+@tree.command(name="offsalegen", description="Get Off-Sale accounts as .txt via DM")
+@app_commands.choices(method=METHOD_CHOICES)
+async def offsalegen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str]):
+    await interaction.response.send_message("✅ Sending Off-Sale accounts to your DM...", ephemeral=True)
+
+    accounts = get_accounts_from_db("offsale", year, method.value, 5)
+
+    if not accounts:
+        await interaction.followup.send(f"❌ No Off-Sale accounts for **{year}** and **{method.value}**!", ephemeral=True)
+        return
+
+    content_txt = f"🔥 Off-Sale {year} - {method.value} - {len(accounts)} Accounts\n"
+    content_txt += "=" * 60 + "\n\n"
+    
+    for i, acc in enumerate(accounts, 1):
+        content_txt += f"{i}. Username: {acc['name']}\n"
+        content_txt += f"   ID: {acc['id']}\n"
+        content_txt += f"   Created: {acc['createdDate']}\n"
+        content_txt += f"   Items: {acc['itemCount']} (Off-Sale)\n\n"
+
+    txt_file = io.StringIO(content_txt)
+    file = discord.File(txt_file, filename=f"offsale_{year}_{method.value}.txt")
+
+    try:
+        await interaction.user.send(f"✅ **{len(accounts)}** Off-Sale accounts!", file=file)
+        await interaction.followup.send("✅ Off-Sale accounts sent to your DM!", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ Open your DMs! Could not send file.", ephemeral=True)
+
+@tree.command(name="stats", description="Show bot statistics")
+async def stats_slash(interaction: discord.Interaction):
+    total = 0
+    for key, acc_list in db.items():
+        total += len(acc_list)
+    
+    embed = discord.Embed(
+        title="📊 Statistics",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Total Accounts", value=f"**{total}**", inline=True)
+    embed.add_field(name="Filters", value=f"**{len(db)}**", inline=True)
+    embed.add_field(name="Scanned IDs", value=f"**{len(scanned_ids)}**", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
 
 # ---------------------------------------------------------
 # BOT START
