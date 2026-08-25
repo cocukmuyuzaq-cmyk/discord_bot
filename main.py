@@ -1,6 +1,5 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
 import aiohttp
 import asyncio
 import json
@@ -62,7 +61,7 @@ METHOD_CHOICES = [
 ]
 
 # ---------------------------------------------------------
-# DÜZELTİLMİŞ FİLTRELEME (SADECE GERÇEK 123_METHOD)
+# FİLTRE - SADECE GERÇEK 123_METHOD
 # ---------------------------------------------------------
 def validate_username_by_filter(username: str):
     if not username:
@@ -70,7 +69,7 @@ def validate_username_by_filter(username: str):
 
     username_lower = username.lower()
 
-    # 1. 123_method: SADECE 123 ile BİTENLER
+    # 1. 123_method: SADECE 123 ile BİTENLER (merhamet123 ✅, 123merhamet ❌)
     if re.search(r'123$', username_lower):
         return '123_method'
 
