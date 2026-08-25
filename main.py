@@ -69,7 +69,7 @@ def validate_username_by_filter(username: str):
 
     username_lower = username.lower()
 
-    # 1. 123_method: SADECE 123 ile BİTENLER (merhamet123 ✅, 123merhamet ❌)
+    # 1. 123_method: SADECE 123 ile BİTENLER
     if re.search(r'123$', username_lower):
         return '123_method'
 
@@ -170,7 +170,7 @@ def get_accounts_from_db(prefix: str, year: str, method: str, limit: int = 1):
     return []
 
 # ---------------------------------------------------------
-# BACKGROUND GENERATOR
+# BACKGROUND GENERATOR - DÜZELTİLMİŞ API
 # ---------------------------------------------------------
 async def run_generator_loop(session: aiohttp.ClientSession):
     print("[TURBO] Generator Started!")
@@ -187,9 +187,12 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                 continue
             scanned_ids.add(test_id)
 
-            async with session.get(f"https://users.roblox.com/v1/users/{test_id}") as resp:
+            # ✅ YENİ API - ÇALIŞIYOR!
+            async with session.get(f"https://apis.roblox.com/cloud/v2/users/{test_id}") as resp:
                 if resp.status == 429:
                     await asyncio.sleep(15)
+                    continue
+                if resp.status == 404:
                     continue
                 if resp.status != 200:
                     continue
@@ -207,6 +210,7 @@ async def run_generator_loop(session: aiohttp.ClientSession):
             if not matched_filter:
                 continue
 
+            # Envanter kontrolü
             item_count = 0
             is_offsale_account = False
             async with session.get(f"https://inventory.roblox.com/v1/users/{test_id}/assets/collectibles?limit=10") as inv_resp:
@@ -219,6 +223,7 @@ async def run_generator_loop(session: aiohttp.ClientSession):
 
             added_account_ids.add(account_id_str)
 
+            # Avatar
             avatar_url = "https://tr.rbxcdn.com/30day-avatar-headshot/150/150/Avatar/Png"
             async with session.get(f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={test_id}&size=150x150&format=Png&isCircular=false") as av_resp:
                 if av_resp.status == 200:
@@ -226,13 +231,14 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                     if av_data.get("data") and len(av_data["data"]) > 0:
                         avatar_url = av_data["data"][0].get("imageUrl", avatar_url)
 
-            account_created = user_data.get("created", "2000-01-01T00:00:00.000Z")
-            account_year = account_created.split("-")[0]
+            # Yeni API'de created alanı farklı olabilir
+            account_created = user_data.get("created", datetime.now().isoformat())
+            account_year = account_created.split("-")[0] if "-" in account_created else str(datetime.now().year)
 
             account_data = {
                 "id": account_id_str,
                 "name": username,
-                "createdDate": account_created.split("T")[0],
+                "createdDate": account_created.split("T")[0] if "T" in account_created else account_created,
                 "isBanned": user_data.get("isBanned", False),
                 "itemCount": item_count,
                 "avatarUrl": avatar_url
