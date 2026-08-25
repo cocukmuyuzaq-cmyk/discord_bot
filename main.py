@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import aiohttp
 import asyncio
@@ -14,7 +15,8 @@ from datetime import datetime
 # ---------------------------------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
 
 DB_FILE = "accounts_db.json"
 db = {}
@@ -22,7 +24,7 @@ scanned_ids = set()
 added_account_ids = set()
 
 # ---------------------------------------------------------
-# YIL ARALIKLARI (Rolimons/API için)
+# YIL ARALIKLARI
 # ---------------------------------------------------------
 YEAR_ID_RANGES = {
     "2010": 10000000,
@@ -39,58 +41,51 @@ YEAR_ID_RANGES = {
 }
 YEARS = list(YEAR_ID_RANGES.keys())
 
-METHODS = [
-    "123_method",
-    "321_method", 
-    "year_user",
-    "cross_user",
-    "double_user",
-    "4_number_method",
-    "2_number_method"
+METHOD_CHOICES = [
+    app_commands.Choice(name="123_method", value="123_method"),
+    app_commands.Choice(name="321_method", value="321_method"),
+    app_commands.Choice(name="year_user", value="year_user"),
+    app_commands.Choice(name="cross_user", value="cross_user"),
+    app_commands.Choice(name="double_user", value="double_user"),
+    app_commands.Choice(name="4_number_method", value="4_number_method"),
+    app_commands.Choice(name="2_number_method", value="2_number_method"),
 ]
 
 # ---------------------------------------------------------
-# FİLTRELEME FONKSİYONU
+# FİLTRELEME
 # ---------------------------------------------------------
 def validate_username_by_filter(username: str):
     if not username:
         return None
 
-    # 1. 123_method
     if re.search(r'^[a-zA-Z]+\d*(?:123)+$', username, re.IGNORECASE) or re.search(r'^123[a-zA-Z]+\d*(?:123)*$', username, re.IGNORECASE):
         return '123_method'
 
-    # 2. 321_method
     if re.search(r'^[a-zA-Z]+\d*(?:321)+$', username, re.IGNORECASE) or re.search(r'^321[a-zA-Z]+\d*(?:321)*$', username, re.IGNORECASE):
         return '321_method'
 
-    # 3. year_user
     if re.search(r'^[a-zA-Z]+\d*(199[8-9]|20[0-2][0-6])\d*$', username, re.IGNORECASE) or re.search(r'^(199[8-9]|20[0-2][0-6])[a-zA-Z]+\d*$', username, re.IGNORECASE):
         return 'year_user'
 
-    # 4. cross_user
     if re.search(r'^(?:\d+[a-zA-Z]+\d+|\d+[a-zA-Z]+\d+[a-zA-Z]+\d*|[a-zA-Z]+\d+[a-zA-Z]+\d*)$', username, re.IGNORECASE):
         return 'cross_user'
 
-    # 5. double_user
     if re.search(r'^[a-zA-Z]+(\d{2})\1+$', username, re.IGNORECASE) or re.search(r'^[a-zA-Z]+\d*(\d)\1{3,}$', username, re.IGNORECASE) or re.search(r'^[a-zA-Z]+\d{2,4}$', username, re.IGNORECASE):
         if re.search(r'\d{4}$', username) and not re.search(r'(\d{2})\1$', username):
             pass
         else:
             return 'double_user'
 
-    # 6. 4_number_method
     if re.search(r'^[a-zA-Z]+\d{4}$', username):
         return '4_number_method'
 
-    # 7. 2_number_method
     if re.search(r'^[a-zA-Z]+\d{2}$', username):
         return '2_number_method'
 
     return None
 
 # ---------------------------------------------------------
-# VERİTABANI İŞLEMLERİ
+# VERİTABANI
 # ---------------------------------------------------------
 def load_db():
     global db, added_account_ids
@@ -114,10 +109,23 @@ def save_db():
         print(f"[HATA] Veritabanı kaydedilirken hata: {e}")
 
 # ---------------------------------------------------------
-# ARKA PLAN TARAYICI (Rolimons + Roblox API)
+# HESAP ALMA FONKSİYONU
+# ---------------------------------------------------------
+def get_accounts_from_db(prefix: str, year: str, method: str, limit: int = 1):
+    key = f"{prefix}_{year}_{method}"
+    if key in db and len(db[key]) > 0:
+        count = min(limit, len(db[key]))
+        selected = db[key][:count]
+        db[key] = db[key][count:]
+        save_db()
+        return selected
+    return []
+
+# ---------------------------------------------------------
+# ARKA PLAN TARAYICI
 # ---------------------------------------------------------
 async def run_generator_loop(session: aiohttp.ClientSession):
-    print("[TURBO] Rolimons Entegreli Tarayıcı Başlatıldı!")
+    print("[TURBO] Tarayıcı Başlatıldı!")
     pending_saves = 0
 
     while True:
@@ -131,7 +139,6 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                 continue
             scanned_ids.add(test_id)
 
-            # Roblox API'den kullanıcı bilgisi al
             async with session.get(f"https://users.roblox.com/v1/users/{test_id}") as resp:
                 if resp.status == 429:
                     await asyncio.sleep(15)
@@ -152,12 +159,8 @@ async def run_generator_loop(session: aiohttp.ClientSession):
             if not matched_filter:
                 continue
 
-            # Rolimons'tan eşya bilgisi al (opsiyonel)
-            # https://api.rolimons.com/players/[ID] - Rate limit var, dikkat!
             item_count = 0
             is_offsale_account = False
-            
-            # Roblox Inventory'den eşya kontrolü
             async with session.get(f"https://inventory.roblox.com/v1/users/{test_id}/assets/collectibles?limit=10") as inv_resp:
                 if inv_resp.status == 200:
                     inv_data = await inv_resp.json()
@@ -168,7 +171,6 @@ async def run_generator_loop(session: aiohttp.ClientSession):
 
             added_account_ids.add(account_id_str)
 
-            # Avatar URL
             avatar_url = "https://tr.rbxcdn.com/30day-avatar-headshot/150/150/Avatar/Png"
             async with session.get(f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={test_id}&size=150x150&format=Png&isCircular=false") as av_resp:
                 if av_resp.status == 200:
@@ -185,8 +187,7 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                 "createdDate": account_created.split("T")[0],
                 "isBanned": user_data.get("isBanned", False),
                 "itemCount": item_count,
-                "avatarUrl": avatar_url,
-                "created": account_created
+                "avatarUrl": avatar_url
             }
 
             added = False
@@ -225,183 +226,209 @@ async def run_generator_loop(session: aiohttp.ClientSession):
             await asyncio.sleep(2)
 
 # ---------------------------------------------------------
-# DISCORD BOT KOMUTLARI
-# ---------------------------------------------------------
-class MyClient(discord.Client):
-    def __init__(self):
-        super().__init__(intents=intents)
-        self.tree = discord.app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        load_db()
-        self.session = aiohttp.ClientSession()
-        self.loop.create_task(run_generator_loop(self.session))
-        await self.tree.sync()
-
-client = MyClient()
-
-# ---------------------------------------------------------
-# KOMUT: !hesap (DM'den .txt gönderir)
+# DISCORD OLAY
 # ---------------------------------------------------------
 @client.event
 async def on_ready():
+    load_db()
+    client.session = aiohttp.ClientSession()
+    client.loop.create_task(run_generator_loop(client.session))
+    await tree.sync()
     print(f"[DISCORD] {client.user} olarak giriş yapıldı!")
 
+# ---------------------------------------------------------
+# DM MESAJ KONTROL (TXT GÖNDERME)
+# ---------------------------------------------------------
 @client.event
 async def on_message(message):
     if message.author.bot:
         return
 
-    # Sadece DM'de çalışsın
     if not isinstance(message.channel, discord.DMChannel):
+        await message.reply("⚠️ Bu bot sadece **DM** üzerinden çalışır!")
         return
 
-    if message.content.startswith("!hesap"):
-        await handle_hesap_command(message)
-    elif message.content.startswith("!yardim"):
-        await handle_yardim_command(message)
-    elif message.content.startswith("!toplam"):
-        await handle_toplam_command(message)
-    elif message.content.startswith("!offsale"):
-        await handle_offsale_command(message)
+    content = message.content.lower()
+
+    if content.startswith("!hesap"):
+        parts = content.split()
+        if len(parts) < 3:
+            await message.channel.send("❌ Kullanım: `!hesap <yıl> <method> <adet>`\nÖrnek: `!hesap 2016 123_method 5`")
+            return
+
+        yil = parts[1]
+        method = parts[2]
+        adet = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 5
+
+        if adet > 50:
+            adet = 50
+
+        accounts = get_accounts_from_db("gen", yil, method, adet)
+
+        if not accounts:
+            await message.channel.send(f"❌ **{yil}** yılı ve **{method}** filtresi için stokta hesap yok!")
+            return
+
+        # TXT oluştur
+        content_txt = f"📦 {yil} - {method} Havuzundan {len(accounts)} Hesap\n"
+        content_txt += "=" * 60 + "\n\n"
+        
+        for i, acc in enumerate(accounts, 1):
+            content_txt += f"{i}. Kullanıcı: {acc['name']}\n"
+            content_txt += f"   ID: {acc['id']}\n"
+            content_txt += f"   Kuruluş: {acc['createdDate']}\n"
+            content_txt += f"   Eşya: {acc['itemCount']}\n\n"
+        
+        content_txt += "=" * 60 + "\n"
+        content_txt += f"📅 Tarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+        content_txt += "🤖 Bot tarafından oluşturuldu."
+
+        txt_file = io.StringIO(content_txt)
+        file = discord.File(txt_file, filename=f"{yil}_{method}_{len(accounts)}hesap.txt")
+        
+        await message.channel.send(f"✅ **{len(accounts)}** hesap hazır!", file=file)
+
+    elif content.startswith("!offsale"):
+        parts = content.split()
+        if len(parts) < 3:
+            await message.channel.send("❌ Kullanım: `!offsale <yıl> <method>`\nÖrnek: `!offsale 2016 123_method`")
+            return
+
+        yil = parts[1]
+        method = parts[2]
+
+        accounts = get_accounts_from_db("offsale", yil, method, 5)
+
+        if not accounts:
+            await message.channel.send(f"❌ **{yil}** yılı ve **{method}** filtresi için Off-Sale hesap yok!")
+            return
+
+        content_txt = f"🔥 Off-Sale {yil} - {method} Havuzundan {len(accounts)} Hesap\n"
+        content_txt += "=" * 60 + "\n\n"
+        
+        for i, acc in enumerate(accounts, 1):
+            content_txt += f"{i}. Kullanıcı: {acc['name']}\n"
+            content_txt += f"   ID: {acc['id']}\n"
+            content_txt += f"   Kuruluş: {acc['createdDate']}\n"
+            content_txt += f"   Eşya: {acc['itemCount']} (Off-Sale)\n\n"
+
+        txt_file = io.StringIO(content_txt)
+        file = discord.File(txt_file, filename=f"offsale_{yil}_{method}.txt")
+        
+        await message.channel.send(f"✅ **{len(accounts)}** Off-Sale hesap!", file=file)
+
+    elif content.startswith("!toplam"):
+        total = 0
+        for key, acc_list in db.items():
+            total += len(acc_list)
+        
+        embed = discord.Embed(
+            title="📊 İstatistikler",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Toplam Hesap", value=f"**{total}**", inline=True)
+        embed.add_field(name="Filtre Sayısı", value=f"**{len(db)}**", inline=True)
+        embed.add_field(name="Taranan ID", value=f"**{len(scanned_ids)}**", inline=True)
+        
+        await message.channel.send(embed=embed)
+
+    elif content.startswith("!yardim"):
+        embed = discord.Embed(
+            title="📖 Yardım Menüsü",
+            description="Bot **DM** üzerinden çalışır!",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="!hesap <yıl> <method> <adet>",
+            value="Örnek: `!hesap 2016 123_method 5`\nMetodlar: `123_method`, `321_method`, `year_user`, `cross_user`, `double_user`, `4_number_method`, `2_number_method`",
+            inline=False
+        )
+        embed.add_field(
+            name="!offsale <yıl> <method>",
+            value="Örnek: `!offsale 2016 123_method`",
+            inline=False
+        )
+        embed.add_field(
+            name="!toplam",
+            value="Toplam hesap sayısını gösterir.",
+            inline=False
+        )
+        await message.channel.send(embed=embed)
+
+    elif content.startswith("!"):
+        await message.channel.send("❌ Bilinmeyen komut! `!yardim` yazarak yardım alabilirsin.")
 
 # ---------------------------------------------------------
-# !hesap <yıl> <method> <adet> (opsiyonel)
+# SLASH KOMUTLAR (Sunucuda da çalışsın diye)
 # ---------------------------------------------------------
-async def handle_hesap_command(message):
-    parts = message.content.split()
+@tree.command(name="gen", description="Tek hesap getirir (DM'ye gönderir)")
+@app_commands.choices(method=METHOD_CHOICES)
+async def gen_slash(interaction: discord.Interaction, yil: str, method: app_commands.Choice[str]):
+    await interaction.response.send_message("✅ Hesap DM'ne gönderiliyor...", ephemeral=True)
     
-    if len(parts) < 3:
-        await message.channel.send("❌ Kullanım: `!hesap <yıl> <method> <adet>`\nÖrnek: `!hesap 2016 123_method 5`")
+    accounts = get_accounts_from_db("gen", yil, method.value, 1)
+    
+    if not accounts:
+        await interaction.followup.send(f"❌ **{yil}** yılı ve **{method.value}** filtresi için stokta hesap yok!", ephemeral=True)
         return
 
-    yil = parts[1]
-    method = parts[2]
-    adet = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 5
+    acc = accounts[0]
     
+    # DM'ye gönder
+    try:
+        embed = discord.Embed(title="🎮 Roblox Hesap", color=discord.Color.green())
+        embed.add_field(name="Kullanıcı Adı", value=f"`{acc['name']}`", inline=True)
+        embed.add_field(name="ID", value=f"`{acc['id']}`", inline=True)
+        embed.add_field(name="Kuruluş", value=acc['createdDate'], inline=True)
+        embed.add_field(name="Eşya Sayısı", value=str(acc['itemCount']), inline=True)
+        embed.set_thumbnail(url=acc['avatarUrl'])
+        embed.set_footer(text=f"Filtre: {method.value} | Yıl: {yil}")
+        
+        await interaction.user.send(embed=embed)
+        await interaction.followup.send("✅ Hesap DM'ne gönderildi!", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ DM'ni açık tut! Hesap gönderilemedi.", ephemeral=True)
+
+@tree.command(name="bulkgen", description="Toplu hesap getirir (DM'ye .txt gönderir)")
+@app_commands.choices(method=METHOD_CHOICES)
+async def bulkgen_slash(interaction: discord.Interaction, yil: str, method: app_commands.Choice[str], adet: int = 5):
     if adet > 50:
         adet = 50
-        await message.channel.send("⚠️ En fazla 50 hesap gönderebilirim, 50'ye düşürüyorum!")
+        await interaction.response.send_message("⚠️ En fazla 50 hesap gönderebilirim, 50'ye düşürüyorum!", ephemeral=True)
+    else:
+        await interaction.response.send_message("✅ Hesaplar DM'ne .txt olarak gönderiliyor...", ephemeral=True)
 
-    # Veritabanından al
-    gen_key = f"gen_{yil}_{method}"
-    accounts = db.get(gen_key, [])[:adet]
-    
+    accounts = get_accounts_from_db("bulk", yil, method.value, adet)
+
     if not accounts:
-        await message.channel.send(f"❌ **{yil}** yılı ve **{method}** filtresi için stokta hesap yok!")
+        await interaction.followup.send(f"❌ **{yil}** yılı ve **{method.value}** filtresi için stokta hesap yok!", ephemeral=True)
         return
 
-    # Veritabanından sil
-    db[gen_key] = db[gen_key][adet:]
-    save_db()
-
-    # .txt oluştur
-    content = f"📦 {yil} - {method} Havuzundan {len(accounts)} Hesap\n"
-    content += "=" * 60 + "\n\n"
+    # TXT oluştur
+    content_txt = f"📦 {yil} - {method.value} Havuzundan {len(accounts)} Hesap\n"
+    content_txt += "=" * 60 + "\n\n"
     
     for i, acc in enumerate(accounts, 1):
-        content += f"{i}. Kullanıcı: {acc['name']}\n"
-        content += f"   ID: {acc['id']}\n"
-        content += f"   Kuruluş: {acc['createdDate']}\n"
-        content += f"   Eşya: {acc['itemCount']}\n\n"
+        content_txt += f"{i}. Kullanıcı: {acc['name']}\n"
+        content_txt += f"   ID: {acc['id']}\n"
+        content_txt += f"   Kuruluş: {acc['createdDate']}\n"
+        content_txt += f"   Eşya: {acc['itemCount']}\n\n"
     
-    content += "=" * 60 + "\n"
-    content += f"📅 Tarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-    content += "🤖 Bot tarafından oluşturuldu."
+    content_txt += "=" * 60 + "\n"
+    content_txt += f"📅 Tarih: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+    content_txt += "🤖 Bot tarafından oluşturuldu."
 
-    txt_file = io.StringIO(content)
-    file = discord.File(txt_file, filename=f"{yil}_{method}_{len(accounts)}hesap.txt")
-    
-    await message.channel.send(f"✅ **{len(accounts)}** hesap hazır!", file=file)
+    txt_file = io.StringIO(content_txt)
+    file = discord.File(txt_file, filename=f"{yil}_{method.value}_{len(accounts)}hesap.txt")
+
+    try:
+        await interaction.user.send(f"✅ **{len(accounts)}** hesap hazır!", file=file)
+        await interaction.followup.send("✅ Hesaplar DM'ne .txt olarak gönderildi!", ephemeral=True)
+    except:
+        await interaction.followup.send("❌ DM'ni açık tut! Dosya gönderilemedi.", ephemeral=True)
 
 # ---------------------------------------------------------
-# !offsale <yıl> <method>
-# ---------------------------------------------------------
-async def handle_offsale_command(message):
-    parts = message.content.split()
-    
-    if len(parts) < 3:
-        await message.channel.send("❌ Kullanım: `!offsale <yıl> <method>`\nÖrnek: `!offsale 2016 123_method`")
-        return
-
-    yil = parts[1]
-    method = parts[2]
-
-    offsale_key = f"offsale_{yil}_{method}"
-    accounts = db.get(offsale_key, [])[:5]  # Off-sale max 5
-    
-    if not accounts:
-        await message.channel.send(f"❌ **{yil}** yılı ve **{method}** filtresi için Off-Sale hesap yok!")
-        return
-
-    db[offsale_key] = db[offsale_key][5:]
-    save_db()
-
-    content = f"🔥 Off-Sale {yil} - {method} Havuzundan {len(accounts)} Hesap\n"
-    content += "=" * 60 + "\n\n"
-    
-    for i, acc in enumerate(accounts, 1):
-        content += f"{i}. Kullanıcı: {acc['name']}\n"
-        content += f"   ID: {acc['id']}\n"
-        content += f"   Kuruluş: {acc['createdDate']}\n"
-        content += f"   Eşya: {acc['itemCount']} (Off-Sale)\n\n"
-
-    txt_file = io.StringIO(content)
-    file = discord.File(txt_file, filename=f"offsale_{yil}_{method}.txt")
-    
-    await message.channel.send(f"✅ **{len(accounts)}** Off-Sale hesap!", file=file)
-
-# ---------------------------------------------------------
-# !toplam
-# ---------------------------------------------------------
-async def handle_toplam_command(message):
-    total = 0
-    for key, acc_list in db.items():
-        total += len(acc_list)
-    
-    embed = discord.Embed(
-        title="📊 İstatistikler",
-        color=discord.Color.green()
-    )
-    embed.add_field(name="Toplam Hesap", value=f"**{total}**", inline=True)
-    embed.add_field(name="Filtre Sayısı", value=f"**{len(db)}**", inline=True)
-    embed.add_field(name="Taranan ID", value=f"**{len(scanned_ids)}**", inline=True)
-    
-    await message.channel.send(embed=embed)
-
-# ---------------------------------------------------------
-# !yardim
-# ---------------------------------------------------------
-async def handle_yardim_command(message):
-    embed = discord.Embed(
-        title="📖 Yardım Menüsü",
-        description="Bot ile DM üzerinden hesap alabilirsin!",
-        color=discord.Color.blue()
-    )
-    embed.add_field(
-        name="!hesap <yıl> <method> <adet>",
-        value="Örnek: `!hesap 2016 123_method 5`\nMetodlar: `123_method`, `321_method`, `year_user`, `cross_user`, `double_user`, `4_number_method`, `2_number_method`",
-        inline=False
-    )
-    embed.add_field(
-        name="!offsale <yıl> <method>",
-        value="Örnek: `!offsale 2016 123_method`\nOff-Sale hesapları verir.",
-        inline=False
-    )
-    embed.add_field(
-        name="!toplam",
-        value="Toplam hesap sayısını gösterir.",
-        inline=False
-    )
-    embed.add_field(
-        name="📌 Not",
-        value="Tüm komutlar **DM'den** çalışır!",
-        inline=False
-    )
-    await message.channel.send(embed=embed)
-
-# ---------------------------------------------------------
-# BOTU BAŞLAT
+# BOT BAŞLAT
 # ---------------------------------------------------------
 TOKEN = os.environ.get("TOKEN")
 
