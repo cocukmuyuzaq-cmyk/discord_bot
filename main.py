@@ -23,23 +23,8 @@ scanned_ids = set()
 added_account_ids = set()
 
 # ---------------------------------------------------------
-# YEAR RANGES
+# TÜM METHODLAR
 # ---------------------------------------------------------
-YEAR_ID_RANGES = {
-    "2010": 10000000,
-    "2011": 18000000,
-    "2012": 25000000,
-    "2013": 35000000,
-    "2014": 50000000,
-    "2015": 80000000,
-    "2016": 120000000,
-    "2017": 200000000,
-    "2018": 400000000,
-    "2019": 700000000,
-    "2020": 1000000000
-}
-YEARS = list(YEAR_ID_RANGES.keys())
-
 ALL_METHODS = [
     "123_method",
     "321_method", 
@@ -170,24 +155,23 @@ def get_accounts_from_db(prefix: str, year: str, method: str, limit: int = 1):
     return []
 
 # ---------------------------------------------------------
-# BACKGROUND GENERATOR - DÜZELTİLMİŞ API
+# BACKGROUND GENERATOR - RANDOM ID İLE TARA
 # ---------------------------------------------------------
 async def run_generator_loop(session: aiohttp.ClientSession):
-    print("[TURBO] Generator Started!")
+    print("[TURBO] Generator Started! Random ID scanning...")
     pending_saves = 0
 
     while True:
         try:
-            target_year = random.choice(YEARS)
-            random_offset = random.randint(0, 2000000)
-            test_id = YEAR_ID_RANGES[target_year] + random_offset
+            # ✅ RANDOM ID ÜRET (1 ile 999999999 arası)
+            test_id = random.randint(1, 999999999)
 
             if test_id in scanned_ids:
                 await asyncio.sleep(0.01)
                 continue
             scanned_ids.add(test_id)
 
-            # ✅ YENİ API - ÇALIŞIYOR!
+            # ✅ YENİ API
             async with session.get(f"https://apis.roblox.com/cloud/v2/users/{test_id}") as resp:
                 if resp.status == 429:
                     await asyncio.sleep(15)
@@ -231,7 +215,6 @@ async def run_generator_loop(session: aiohttp.ClientSession):
                     if av_data.get("data") and len(av_data["data"]) > 0:
                         avatar_url = av_data["data"][0].get("imageUrl", avatar_url)
 
-            # Yeni API'de created alanı farklı olabilir
             account_created = user_data.get("created", datetime.now().isoformat())
             account_year = account_created.split("-")[0] if "-" in account_created else str(datetime.now().year)
 
