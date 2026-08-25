@@ -62,33 +62,41 @@ METHOD_CHOICES = [
 ]
 
 # ---------------------------------------------------------
-# USERNAME FILTER
+# DÜZELTİLMİŞ FİLTRELEME (SADECE GERÇEK 123_METHOD)
 # ---------------------------------------------------------
 def validate_username_by_filter(username: str):
     if not username:
         return None
 
-    if re.search(r'^[a-zA-Z]+\d*(?:123)+$', username, re.IGNORECASE) or re.search(r'^123[a-zA-Z]+\d*(?:123)*$', username, re.IGNORECASE):
+    username_lower = username.lower()
+
+    # 1. 123_method: SADECE 123 ile BİTENLER
+    if re.search(r'123$', username_lower):
         return '123_method'
 
-    if re.search(r'^[a-zA-Z]+\d*(?:321)+$', username, re.IGNORECASE) or re.search(r'^321[a-zA-Z]+\d*(?:321)*$', username, re.IGNORECASE):
+    # 2. 321_method: SADECE 321 ile BİTENLER
+    if re.search(r'321$', username_lower):
         return '321_method'
 
-    if re.search(r'^[a-zA-Z]+\d*(199[8-9]|20[0-2][0-6])\d*$', username, re.IGNORECASE) or re.search(r'^(199[8-9]|20[0-2][0-6])[a-zA-Z]+\d*$', username, re.IGNORECASE):
+    # 3. year_user: İçinde yıl geçen (1998-2026)
+    if re.search(r'(199[8-9]|20[0-2][0-6])', username):
         return 'year_user'
 
-    if re.search(r'^(?:\d+[a-zA-Z]+\d+|\d+[a-zA-Z]+\d+[a-zA-Z]+\d*|[a-zA-Z]+\d+[a-zA-Z]+\d*)$', username, re.IGNORECASE):
+    # 4. cross_user: Harf-sayı-harf geçişli
+    if re.search(r'^[a-zA-Z]+\d+[a-zA-Z]+\d*$', username) or \
+       re.search(r'^\d+[a-zA-Z]+\d+$', username):
         return 'cross_user'
 
-    if re.search(r'^[a-zA-Z]+(\d{2})\1+$', username, re.IGNORECASE) or re.search(r'^[a-zA-Z]+\d*(\d)\1{3,}$', username, re.IGNORECASE) or re.search(r'^[a-zA-Z]+\d{2,4}$', username, re.IGNORECASE):
-        if re.search(r'\d{4}$', username) and not re.search(r'(\d{2})\1$', username):
-            pass
-        else:
-            return 'double_user'
+    # 5. double_user: Tekrar eden sayılar (1414, 1010, 9999, 666)
+    if re.search(r'(\d{2})\1', username) or \
+       re.search(r'(\d)\1{2,}', username):
+        return 'double_user'
 
+    # 6. 4_number_method: Harf + 4 sayı ile biten
     if re.search(r'^[a-zA-Z]+\d{4}$', username):
         return '4_number_method'
 
+    # 7. 2_number_method: Harf + 2 sayı ile biten
     if re.search(r'^[a-zA-Z]+\d{2}$', username):
         return '2_number_method'
 
@@ -119,11 +127,9 @@ def save_db():
         print(f"[ERROR] Database save error: {e}")
 
 def save_account_to_all_methods(account_data, account_year, matched_filter, is_offsale_account):
-    """Save account to ALL methods so any method query works"""
     global db
     added = False
     
-    # Save to ALL methods
     for method in ALL_METHODS:
         gen_key = f"gen_{account_year}_{method}"
         bulk_key = f"bulk_{account_year}_{method}"
@@ -139,7 +145,6 @@ def save_account_to_all_methods(account_data, account_year, matched_filter, is_o
             db[bulk_key].append(account_data)
             added = True
         
-        # Off-sale
         if is_offsale_account:
             offsale_key = f"offsale_{account_year}_{method}"
             if offsale_key not in db: db[offsale_key] = []
@@ -150,14 +155,12 @@ def save_account_to_all_methods(account_data, account_year, matched_filter, is_o
     return added
 
 def get_all_accounts_from_db(year: str, method: str):
-    """Get ALL accounts without removing them"""
     gen_key = f"gen_{year}_{method}"
     if gen_key in db and len(db[gen_key]) > 0:
-        return db[gen_key].copy()  # Return copy, don't remove
+        return db[gen_key].copy()
     return []
 
 def get_accounts_from_db(prefix: str, year: str, method: str, limit: int = 1):
-    """Get and REMOVE accounts from DB"""
     key = f"{prefix}_{year}_{method}"
     if key in db and len(db[key]) > 0:
         count = min(limit, len(db[key]))
@@ -284,17 +287,12 @@ async def on_message(message):
         )
         embed.add_field(
             name="!list <year> <method>",
-            value="Example: `!list 2016 123_method`\nShows ALL account usernames for that filter",
+            value="Example: `!list 2016 123_method`\nShows ALL account usernames",
             inline=False
         )
         embed.add_field(
             name="!get <year> <method> <amount>",
-            value="Example: `!get 2016 123_method 5`\nGets accounts as .txt file",
-            inline=False
-        )
-        embed.add_field(
-            name="!offsale <year> <method>",
-            value="Example: `!offsale 2016 123_method`",
+            value="Example: `!get 2016 123_method 5`\nGets accounts as .txt",
             inline=False
         )
         embed.add_field(
@@ -304,7 +302,6 @@ async def on_message(message):
         )
         await message.channel.send(embed=embed)
 
-    # NEW: !list command - shows ALL account names
     elif content.startswith("!list"):
         parts = content.split()
         if len(parts) < 3:
@@ -320,12 +317,10 @@ async def on_message(message):
             await message.channel.send(f"❌ No accounts found for **{year}** and **{method}**!")
             return
 
-        # Build username list
         username_list = []
         for acc in accounts:
             username_list.append(acc['name'])
         
-        # Send as text
         content_txt = f"📋 {year} - {method} - {len(accounts)} Accounts\n"
         content_txt += "=" * 50 + "\n\n"
         content_txt += "\n".join(username_list)
@@ -333,7 +328,6 @@ async def on_message(message):
         content_txt += f"📅 Date: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
         if len(content_txt) > 1900:
-            # Send as file if too long
             txt_file = io.StringIO(content_txt)
             file = discord.File(txt_file, filename=f"{year}_{method}_usernames.txt")
             await message.channel.send(f"✅ **{len(accounts)}** usernames found!", file=file)
@@ -377,35 +371,6 @@ async def on_message(message):
         
         await message.channel.send(f"✅ **{len(accounts)}** accounts ready!", file=file)
 
-    elif content.startswith("!offsale"):
-        parts = content.split()
-        if len(parts) < 3:
-            await message.channel.send("❌ Usage: `!offsale <year> <method>`\nExample: `!offsale 2016 123_method`")
-            return
-
-        year = parts[1]
-        method = parts[2]
-
-        accounts = get_accounts_from_db("offsale", year, method, 5)
-
-        if not accounts:
-            await message.channel.send(f"❌ No Off-Sale accounts found for **{year}** and **{method}**!")
-            return
-
-        content_txt = f"🔥 Off-Sale {year} - {method} - {len(accounts)} Accounts\n"
-        content_txt += "=" * 60 + "\n\n"
-        
-        for i, acc in enumerate(accounts, 1):
-            content_txt += f"{i}. Username: {acc['name']}\n"
-            content_txt += f"   ID: {acc['id']}\n"
-            content_txt += f"   Created: {acc['createdDate']}\n"
-            content_txt += f"   Items: {acc['itemCount']} (Off-Sale)\n\n"
-
-        txt_file = io.StringIO(content_txt)
-        file = discord.File(txt_file, filename=f"offsale_{year}_{method}.txt")
-        
-        await message.channel.send(f"✅ **{len(accounts)}** Off-Sale accounts!", file=file)
-
     elif content.startswith("!stats"):
         total = 0
         for key, acc_list in db.items():
@@ -435,7 +400,7 @@ async def list_slash(interaction: discord.Interaction, year: str, method: app_co
     accounts = get_all_accounts_from_db(year, method.value)
 
     if not accounts:
-        await interaction.followup.send(f"❌ No accounts found for **{year}** and **{method.value}**!", ephemeral=True)
+        await interaction.followup.send(f"❌ No accounts for **{year}** and **{method.value}**!", ephemeral=True)
         return
 
     username_list = []
@@ -452,50 +417,23 @@ async def list_slash(interaction: discord.Interaction, year: str, method: app_co
         if len(content_txt) > 1900:
             txt_file = io.StringIO(content_txt)
             file = discord.File(txt_file, filename=f"{year}_{method.value}_usernames.txt")
-            await interaction.user.send(f"✅ **{len(accounts)}** usernames found!", file=file)
+            await interaction.user.send(f"✅ **{len(accounts)}** usernames!", file=file)
         else:
-            await interaction.user.send(f"✅ **{len(accounts)}** accounts found:\n```\n{content_txt}\n```")
-        await interaction.followup.send("✅ Usernames sent to your DM!", ephemeral=True)
+            await interaction.user.send(f"✅ **{len(accounts)}** accounts:\n```\n{content_txt}\n```")
+        await interaction.followup.send("✅ Sent to your DM!", ephemeral=True)
     except:
-        await interaction.followup.send("❌ Open your DMs! Could not send.", ephemeral=True)
+        await interaction.followup.send("❌ Open your DMs!", ephemeral=True)
 
-@tree.command(name="gen", description="Get 1 account via DM")
+@tree.command(name="get", description="Get accounts as .txt via DM")
 @app_commands.choices(method=METHOD_CHOICES)
-async def gen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str]):
-    await interaction.response.send_message("✅ Sending account to your DM...", ephemeral=True)
-    
-    accounts = get_accounts_from_db("gen", year, method.value, 1)
-    
-    if not accounts:
-        await interaction.followup.send(f"❌ No accounts for **{year}** and **{method.value}**!", ephemeral=True)
-        return
-
-    acc = accounts[0]
-    
-    try:
-        embed = discord.Embed(title="🎮 Roblox Account", color=discord.Color.green())
-        embed.add_field(name="Username", value=f"`{acc['name']}`", inline=True)
-        embed.add_field(name="ID", value=f"`{acc['id']}`", inline=True)
-        embed.add_field(name="Created", value=acc['createdDate'], inline=True)
-        embed.add_field(name="Items", value=str(acc['itemCount']), inline=True)
-        embed.set_thumbnail(url=acc['avatarUrl'])
-        embed.set_footer(text=f"Filter: {method.value} | Year: {year}")
-        
-        await interaction.user.send(embed=embed)
-        await interaction.followup.send("✅ Account sent to your DM!", ephemeral=True)
-    except:
-        await interaction.followup.send("❌ Open your DMs! Could not send account.", ephemeral=True)
-
-@tree.command(name="bulkgen", description="Get multiple accounts as .txt via DM")
-@app_commands.choices(method=METHOD_CHOICES)
-async def bulkgen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str], amount: int = 5):
+async def get_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str], amount: int = 5):
     if amount > 50:
         amount = 50
-        await interaction.response.send_message("⚠️ Max 50 accounts, reducing to 50!", ephemeral=True)
+        await interaction.response.send_message("⚠️ Max 50, reducing!", ephemeral=True)
     else:
-        await interaction.response.send_message("✅ Sending accounts to your DM...", ephemeral=True)
+        await interaction.response.send_message("✅ Sending...", ephemeral=True)
 
-    accounts = get_accounts_from_db("bulk", year, method.value, amount)
+    accounts = get_accounts_from_db("gen", year, method.value, amount)
 
     if not accounts:
         await interaction.followup.send(f"❌ No accounts for **{year}** and **{method.value}**!", ephemeral=True)
@@ -511,46 +449,16 @@ async def bulkgen_slash(interaction: discord.Interaction, year: str, method: app
         content_txt += f"   Items: {acc['itemCount']}\n\n"
     
     content_txt += "=" * 60 + "\n"
-    content_txt += f"📅 Date: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
-    content_txt += "🤖 Generated by bot."
+    content_txt += f"📅 Date: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
 
     txt_file = io.StringIO(content_txt)
     file = discord.File(txt_file, filename=f"{year}_{method.value}_{len(accounts)}accounts.txt")
 
     try:
-        await interaction.user.send(f"✅ **{len(accounts)}** accounts ready!", file=file)
-        await interaction.followup.send("✅ Accounts sent to your DM!", ephemeral=True)
+        await interaction.user.send(f"✅ **{len(accounts)}** accounts!", file=file)
+        await interaction.followup.send("✅ Sent to your DM!", ephemeral=True)
     except:
-        await interaction.followup.send("❌ Open your DMs! Could not send file.", ephemeral=True)
-
-@tree.command(name="offsalegen", description="Get Off-Sale accounts as .txt via DM")
-@app_commands.choices(method=METHOD_CHOICES)
-async def offsalegen_slash(interaction: discord.Interaction, year: str, method: app_commands.Choice[str]):
-    await interaction.response.send_message("✅ Sending Off-Sale accounts to your DM...", ephemeral=True)
-
-    accounts = get_accounts_from_db("offsale", year, method.value, 5)
-
-    if not accounts:
-        await interaction.followup.send(f"❌ No Off-Sale accounts for **{year}** and **{method.value}**!", ephemeral=True)
-        return
-
-    content_txt = f"🔥 Off-Sale {year} - {method.value} - {len(accounts)} Accounts\n"
-    content_txt += "=" * 60 + "\n\n"
-    
-    for i, acc in enumerate(accounts, 1):
-        content_txt += f"{i}. Username: {acc['name']}\n"
-        content_txt += f"   ID: {acc['id']}\n"
-        content_txt += f"   Created: {acc['createdDate']}\n"
-        content_txt += f"   Items: {acc['itemCount']} (Off-Sale)\n\n"
-
-    txt_file = io.StringIO(content_txt)
-    file = discord.File(txt_file, filename=f"offsale_{year}_{method.value}.txt")
-
-    try:
-        await interaction.user.send(f"✅ **{len(accounts)}** Off-Sale accounts!", file=file)
-        await interaction.followup.send("✅ Off-Sale accounts sent to your DM!", ephemeral=True)
-    except:
-        await interaction.followup.send("❌ Open your DMs! Could not send file.", ephemeral=True)
+        await interaction.followup.send("❌ Open your DMs!", ephemeral=True)
 
 @tree.command(name="stats", description="Show bot statistics")
 async def stats_slash(interaction: discord.Interaction):
