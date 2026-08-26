@@ -39,6 +39,9 @@ MAX_HISTORY = 50
 image_limits = {}
 DAILY_IMAGE_LIMIT = 5
 
+# Abonelik sistemi
+subscriptions = {}  # {user_id: {"type": "gold"/"premium"/"free", "expiry": timestamp}}
+
 # Resim API'si
 IMAGE_API_URL = "https://image.pollinations.ai/prompt/"
 
@@ -51,21 +54,17 @@ user_chat_mode = {}
 async def translate_to_english(text):
     """Google Translate API ile Türkçe'yi İngilizce'ye çevirir"""
     try:
-        # Google Translate ücretsiz API
         translate_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=tr&tl=en&dt=t&q={text.replace(' ', '%20')}"
         
         async with aiohttp.ClientSession() as session:
             async with session.get(translate_url) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Çeviri sonucunu al
                     translated = data[0][0][0]
                     return translated
                 else:
-                    # Çeviri başarısız olursa orijinal metni kullan
                     return text
     except:
-        # Hata durumunda orijinal metni kullan
         return text
 
 @bot.event
@@ -145,6 +144,11 @@ async def on_message(message):
         await message.channel.send("🔇 **Sohbet modu kapatıldı!** Artık sadece etiketlendiğimde cevap vereceğim.")
         return
     
+    # /abonelik komutu
+    if message.content.startswith('/abonelik') or message.content.startswith('!abonelik'):
+        await handle_subscription(message)
+        return
+    
     # Yanıt verme koşulları
     should_respond = (
         is_chat_mode or
@@ -215,29 +219,42 @@ async def on_message(message):
     await bot.process_commands(message)
 
 async def handle_image_request(message, content):
-    """Resim oluşturma isteğini işler - Google Translate ile çeviri yapar"""
+    """Resim oluşturma isteğini işler - 5 dakika timeout ile"""
     user_id = message.author.id
     
-    # Günlük limit kontrolü
-    today = datetime.now().date()
-    if user_id not in image_limits:
-        image_limits[user_id] = {"count": 0, "date": today}
-    
-    if image_limits[user_id]["date"] != today:
-        image_limits[user_id] = {"count": 0, "date": today}
-    
-    if image_limits[user_id]["count"] >= DAILY_IMAGE_LIMIT:
-        await message.channel.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün). Yarın tekrar deneyin.")
-        return
+    # Abonelik kontrolü
+    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
+    if sub_info["type"] == "free":
+        # Free kullanıcılar için limit
+        today = datetime.now().date()
+        if user_id not in image_limits:
+            image_limits[user_id] = {"count": 0, "date": today}
+        
+        if image_limits[user_id]["date"] != today:
+            image_limits[user_id] = {"count": 0, "date": today}
+        
+        if image_limits[user_id]["count"] >= DAILY_IMAGE_LIMIT:
+            await message.channel.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün).\n📌 Daha fazla resim için `/abonelik` yazın.")
+            return
+    elif sub_info["type"] == "premium":
+        # Premium kullanıcılar için limit yok
+        pass
+    elif sub_info["type"] == "gold":
+        # Gold kullanıcılar için limit yok + özel kalite
+        pass
     
     # Resim prompt'unu çıkar
     prompt = content.replace('/resim', '').replace('!resim', '').strip()
     if not prompt:
-        await message.channel.send("❌ Ne çizmem gerektiğini yazın! Örnek: `/resim kedi`")
+        await message.channel.send("❌ Ne çizmem gerektiğini yazın! Örnek: `/resim siyah araba`")
         return
     
-    async with message.channel.typing():
-        try:
+    # "Resminiz Hazırlanıyor..." mesajı
+    status_msg = await message.channel.send("🎨 **Resminiz Hazırlanıyor...**\n⏳ Bu işlem birkaç saniye sürebilir...")
+    
+    try:
+        # 5 dakika timeout ile resim oluştur
+        async with asyncio.timeout(300):  # 5 dakika
             # Google Translate ile Türkçe'yi İngilizce'ye çevir
             english_prompt = await translate_to_english(prompt)
             
@@ -252,30 +269,83 @@ async def handle_image_request(message, content):
                         
                         file = discord.File(io.BytesIO(image_data), filename="resim.png")
                         
+                        # Abonelik tipine göre embed rengi
+                        if sub_info["type"] == "gold":
+                            color = discord.Color.gold()
+                            sub_text = "👑 Gold Üye"
+                        elif sub_info["type"] == "premium":
+                            color = discord.Color.purple()
+                            sub_text = "💎 Premium Üye"
+                        else:
+                            color = discord.Color.blue()
+                            sub_text = "📌 Free Üye"
+                        
                         embed = discord.Embed(
                             title="🎨 Estanya Resim Oluşturdu!",
-                            description=f"**İstediğin:** `{prompt}`",
-                            color=discord.Color.blue()
+                            description=f"**İstediğin:** `{prompt}`\n**Abonelik:** {sub_text}",
+                            color=color
                         )
                         embed.set_image(url="attachment://resim.png")
-                        embed.set_footer(text=f"Kalan hak: {DAILY_IMAGE_LIMIT - image_limits[user_id]['count'] - 1}")
                         
+                        # Kalan hak
+                        if sub_info["type"] == "free":
+                            kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"] - 1
+                            embed.set_footer(text=f"Kalan hak: {kalan} / {DAILY_IMAGE_LIMIT} (günlük)")
+                        else:
+                            embed.set_footer(text="🌟 Sınırsız resim hakkı!")
+                        
+                        # Hazırlanıyor mesajını sil ve resmi gönder
+                        await status_msg.delete()
                         await message.channel.send(embed=embed, file=file)
                         
-                        image_limits[user_id]["count"] += 1
+                        # Limiti güncelle (sadece free kullanıcılar için)
+                        if sub_info["type"] == "free":
+                            image_limits[user_id]["count"] += 1
                     else:
-                        await message.channel.send(f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
+                        await status_msg.edit(content="❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
                         
-        except discord.Forbidden:
-            await message.channel.send("❌ **Yetki hatası!** Botun resim gönderme izni yok.")
-        except Exception as e:
-            await message.channel.send(f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
+    except asyncio.TimeoutError:
+        # 5 dakika geçtiyse iptal et
+        await status_msg.edit(content="⏰ **Resim oluşturma iptal edildi!**\n5 dakikadan uzun sürdüğü için işlem iptal edildi. Lütfen tekrar deneyin.")
+    except discord.Forbidden:
+        await status_msg.edit(content="❌ **Yetki hatası!** Botun resim gönderme izni yok.")
+    except Exception as e:
+        await status_msg.edit(content=f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
+
+async def handle_subscription(message):
+    """Abonelik sistemi - Yakında gelecek mesajı"""
+    user_id = message.author.id
+    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
+    
+    embed = discord.Embed(
+        title="📋 Estanya Abonelik Sistemi",
+        description="**Yakında!** 🚀",
+        color=discord.Color.gold()
+    )
+    embed.add_field(
+        name="📌 Mevcut Planınız",
+        value=f"**{sub_info['type'].upper()}**",
+        inline=False
+    )
+    embed.add_field(
+        name="🌟 Yakında Gelecek Özellikler",
+        value="• Sınırsız resim oluşturma\n• Özel kalite seçenekleri\n• Öncelikli işlem\n• Özel destek",
+        inline=False
+    )
+    embed.add_field(
+        name="📅 Tarih",
+        value="**Yakında duyurulacak!**",
+        inline=False
+    )
+    embed.set_footer(text="Estanya Bot | Abonelik sistemi hazırlanıyor...")
+    
+    await message.channel.send(embed=embed)
 
 # ----- KOMUTLAR -----
 
 @bot.command(name='resim')
 async def image_command(ctx, *, prompt):
-    """Resim oluşturur: !resim kedi"""
+    """Resim oluşturur: !resim siyah araba"""
     await handle_image_request(ctx.message, f"!resim {prompt}")
 
 @bot.command(name='konuşma')
@@ -290,18 +360,28 @@ async def close_chat_mode(ctx):
     user_chat_mode[ctx.author.id] = False
     await ctx.send("🔇 **Sohbet modu kapatıldı!** Artık sadece etiketlendiğimde cevap vereceğim.")
 
+@bot.command(name='abonelik')
+async def subscription_command(ctx):
+    """Abonelik bilgilerini gösterir"""
+    await handle_subscription(ctx.message)
+
 @bot.command(name='limit')
 async def check_limit(ctx):
     """Kalan resim hakkını gösterir"""
     user_id = ctx.author.id
-    today = datetime.now().date()
+    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
     
+    if sub_info["type"] != "free":
+        await ctx.send(f"🌟 **{sub_info['type'].upper()}** üyesisiniz! Sınırsız resim hakkınız var!")
+        return
+    
+    today = datetime.now().date()
     if user_id not in image_limits or image_limits[user_id]["date"] != today:
         kalan = DAILY_IMAGE_LIMIT
     else:
         kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
     
-    await ctx.send(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)")
+    await ctx.send(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)\n📌 Daha fazla için `/abonelik` yazın.")
 
 @bot.command(name='history')
 async def show_history(ctx):
@@ -353,19 +433,23 @@ async def help_command(ctx):
 • 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
 • 💬 **Sohbet Modu:** Sürekli sohbet modu (aç/kapat)
 • 🎨 **Resim Oluşturma:** Ücretsiz resim yapar
-• 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün
+• 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün (Free)
 • 🌐 **Otomatik Çeviri:** Türkçe prompt'ları İngilizce'ye çevirir
+• ⏰ **5 Dakika Timeout:** Uzun süren işlemler iptal edilir
+• 📋 **Abonelik Sistemi:** Yakında!
 
 **Kullanım:**
 • `/konuşma` - Sohbet modunu açar
 • `/kapat` - Sohbet modunu kapatır
 • `/resim <açıklama>` - Resim oluşturur
+• `/abonelik` - Abonelik bilgilerini gösterir
 • `@Estanya` - Botu etiketleyip soru sorun
 
 **Komutlar:**
 • `/konuşma` veya `!konuşma` - Sohbet modunu açar
 • `/kapat` veya `!kapat` - Sohbet modunu kapatır
 • `/resim <açıklama>` veya `!resim <açıklama>` - Resim oluşturur
+• `/abonelik` veya `!abonelik` - Abonelik bilgilerini gösterir
 • `!limit` - Kalan resim hakkını gösterir
 • `!history` - Son 10 mesajınızı gösterir
 • `!clear_history` - Mesaj geçmişinizi temizler
