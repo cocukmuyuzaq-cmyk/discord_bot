@@ -4,81 +4,79 @@ import asyncio
 import json
 import os
 import random
-import socket
+import base64
 from discord.ext import commands
+from datetime import datetime, timedelta
 
 # Environment variables'dan oku
 TOKEN = os.getenv('TOKEN') or os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
-# Bot sahibi ID'si (güncellendi!)
+# Bot sahibi ID'si
 OWNER_ID = 1482762948106784951
 
 # Sunucu adı
-SERVER_NAME = "/Estanya"
+SERVER_NAME = "Estanya"
 
-# Port ayarı (Render için)
-PORT = int(os.getenv('PORT', 8080))
+# Port ayarı (Render için en iyi port)
+PORT = int(os.getenv('PORT', 10000))
 
 if not TOKEN:
     raise ValueError("❌ TOKEN environment variable'ı bulunamadı!")
 if not GROQ_API_KEY:
     raise ValueError("❌ GROQ_API_KEY environment variable'ı bulunamadı!")
 
-intents = discord.Intents.all()  # Tüm intent'leri aç (mesaj geçmişi için)
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Kullanıcı mesaj geçmişi (son 50 mesaj)
 user_history = {}
 MAX_HISTORY = 50
 
-# Eğlenceli cevaplar
-funny_responses = [
-    "🤣 Bu soruyu sorduğuna göre çok eğleniyorsun!",
-    "😄 Harika bir soru! Cevabı: 42 (her şeyin cevabı)",
-    "🤪 Ben bir botum ama sen benden daha bot davranıyorsun!",
-    "😂 Bu soruyu cevaplamak için kahve molası veriyorum...",
-    "😅 Bak şimdi, bu soru beni aştı! Ama deneyelim...",
-    "🤔 Bu soruyu düşünürken beynim ısındı!",
-    "🎉 Cevap: Sen harikasın! (her soruya uygun)",
-    "🍕 Pizza mı? Hayır, sorunu cevaplıyorum!",
-    "💡 Fikir geldi! Ama sonra unuttum...",
-    "🦄 Tek boynuzlu atlar bu soruyu sever!"
-]
+# Resim oluşturma limiti (günlük 5 resim)
+image_limits = {}
+DAILY_IMAGE_LIMIT = 5
 
-# Küfürlü mod cevapları (sadece bot sahibine özel)
-curse_responses = [
-    "Sana bunun cevabını mı versem? 😏",
-    "Yok artık! Bu soruya cevap vermek çok zor! 🤬",
-    "Küfür mü edelim? Ben yapmam, ama sen edebilirsin! 😈",
-    "Bak bu soruya cevap vermek için 'sihirli kelime' lazım! 🧙",
-    "Bu soruya cevap vermek için 5 dakika mola! ⏰",
-    "Ben botum, sen insansın - bu soruyu sen çöz! 🧠",
-    "Cevap: Küfür etme, gülümse! 😊",
-    "Bu soruyu görünce kahve içmek istedim! ☕",
-    "Sana cevap versem, botluktan çıkarım! 🤖",
-    "Bu soruyu ChatGPT'ye sorsana! 😂"
-]
+# Ücretsiz resim API'si (Pollinations.ai - tamamen ücretsiz)
+IMAGE_API_URL = "https://image.pollinations.ai/prompt/"
 
-# Flask veya basit HTTP sunucusu için (Render'da çalışması için)
+# Botun cevap vermesi gereken kelimeler (trigger keywords)
+TRIGGER_WORDS = ["estanya", "bot", "yardım", "merhaba", "hello", "hi", "selam"]
+
+@bot.event
+async def on_ready():
+    print(f'✅ /estanya bot olarak giriş yapıldı!')
+    print(f'📊 Bot ID: {bot.user.id}')
+    print(f'🏠 Sunucu: {SERVER_NAME}')
+    print(f'👑 Sahip ID: {OWNER_ID}')
+    print(f'🌐 Port: {PORT}')
+    print(f'🎨 Resim API: Pollinations.ai (ücretsiz)')
+    
+    # Botun bulunduğu sunucuları listele
+    for guild in bot.guilds:
+        print(f'📌 Sunucu: {guild.name} (ID: {guild.id})')
+    
+    # HTTP sunucusunu başlat (Render için)
+    asyncio.create_task(run_http_server())
+
 async def run_http_server():
-    """Render'da botun çalıştığını göstermek için basit HTTP sunucusu"""
+    """Render'da botun çalıştığını göstermek için HTTP sunucusu"""
     try:
-        # Basit bir HTTP sunucusu başlat
-        import asyncio
         from aiohttp import web
         
         async def health_check(request):
-            return web.Response(text=f"✅ Bot çalışıyor! Sunucu: {SERVER_NAME}, Bot: {bot.user.name}")
+            return web.Response(text=f"✅ /estanya bot çalışıyor! Sunucu: {SERVER_NAME}")
         
         async def info(request):
             return web.json_response({
                 "status": "online",
-                "bot_name": bot.user.name if bot.user else "Bilinmiyor",
+                "bot_name": "estanya",
                 "server": SERVER_NAME,
                 "owner_id": OWNER_ID,
-                "guilds": [guild.name for guild in bot.guilds]
+                "guilds": [guild.name for guild in bot.guilds],
+                "image_api": "Pollinations.ai (ücretsiz)",
+                "daily_image_limit": DAILY_IMAGE_LIMIT
             })
         
         app = web.Application()
@@ -92,28 +90,9 @@ async def run_http_server():
         await site.start()
         print(f"✅ HTTP sunucusu başlatıldı: http://0.0.0.0:{PORT}")
         
-        # Süresiz bekle
         await asyncio.Event().wait()
-    except ImportError:
-        print("⚠️ aiohttp.web yok, HTTP sunucusu başlatılamadı (sadece bot çalışacak)")
     except Exception as e:
         print(f"⚠️ HTTP sunucusu hatası: {e}")
-
-@bot.event
-async def on_ready():
-    print(f'✅ {bot.user} olarak giriş yapıldı!')
-    print(f'📊 Bot ID: {bot.user.id}')
-    print(f'🏠 Sunucu: {SERVER_NAME}')
-    print(f'👑 Sahip ID: {OWNER_ID}')
-    print(f'🔑 Groq API: {"✓" if GROQ_API_KEY else "✗"}')
-    print(f'🌐 Port: {PORT}')
-    
-    # Botun bulunduğu sunucuları listele
-    for guild in bot.guilds:
-        print(f'📌 Sunucu: {guild.name} (ID: {guild.id})')
-    
-    # HTTP sunucusunu başlat (Render için)
-    asyncio.create_task(run_http_server())
 
 @bot.event
 async def on_message(message):
@@ -130,8 +109,14 @@ async def on_message(message):
     if len(user_history[user_id]) > MAX_HISTORY:
         user_history[user_id].pop(0)
     
-    # Bot etiketlendiğinde veya özel mesajda yanıt ver
-    if bot.user in message.mentions or isinstance(message.channel, discord.DMChannel):
+    # Bot etiketlendiğinde, DM'de veya trigger kelimelerle yanıt ver
+    should_respond = (
+        bot.user in message.mentions or 
+        isinstance(message.channel, discord.DMChannel) or
+        any(word in message.content.lower() for word in TRIGGER_WORDS)
+    )
+    
+    if should_respond:
         # Mesajı temizle (bot etiketini kaldır)
         content = message.content
         if bot.user in message.mentions:
@@ -139,38 +124,42 @@ async def on_message(message):
                 content = content.replace(f'<@{mention.id}>', '').replace(f'<@!{mention.id}>', '')
         content = content.strip()
         
-        if not content:
-            await message.channel.send('💭 Bir şey sormak ister misiniz?')
+        # Eğer sadece trigger kelime varsa ve başka içerik yoksa
+        if not content or content.lower() in TRIGGER_WORDS:
+            await message.channel.send(f"👋 Merhaba! Ben /estanya bot. Yardım için `!help_ai` yazabilirsiniz. DM'den de konuşabiliriz!")
+            return
+        
+        # Resim yapma komutu kontrolü
+        if "/resim" in content.lower() or "resim yap" in content.lower() or "draw" in content.lower():
+            await handle_image_request(message, content)
             return
         
         # Bot sahibi kontrolü
         is_owner = (message.author.id == OWNER_ID)
         
-        # Eğlenceli mod (rastgele cevap)
-        if random.random() < 0.2:  # %20 şans
-            await message.channel.send(random.choice(funny_responses))
-            return
-        
-        # Küfürlü mod (sadece bot sahibi)
-        if is_owner and random.random() < 0.3:  # %30 şans
-            await message.channel.send(random.choice(curse_responses))
-            return
-        
         # Normal AI yanıtı
         async with message.channel.typing():
             try:
                 # Kullanıcının son mesajlarını al
-                history = user_history.get(user_id, [])[-5:]  # Son 5 mesaj
+                history = user_history.get(user_id, [])[-5:]
                 context = "\n".join(history) if history else ""
                 
-                # Bot sahibine özel mesaj
-                owner_note = f" (Bot sahibisin! Özel yetkilerin var)" if is_owner else ""
+                # Botun adını ve özelliklerini sistem mesajına ekle
+                system_message = f"""Sen /estanya botusun. {SERVER_NAME} sunucusunda yardımcı bir asistansın.
+                Kullanıcının son mesajları: {context}
+                Bot sahibi: <@{OWNER_ID}>
+                Özelliklerin: DM'de konuşabilirsin, mesaj geçmişini hatırlarsın, /resim ile ücretsiz resim yapabilirsin (Pollinations.ai).
+                Eğer kullanıcı İngilizce bir şey isterse, "Lütfen Türkçe yazın / Please write in Turkish" diyerek Türkçe yazmasını iste.
+                """
+                
+                if is_owner:
+                    system_message += " (Bot sahibisin, özel yetkilerin var!)"
                 
                 async with aiohttp.ClientSession() as session:
                     payload = {
                         "model": "openai/gpt-oss-120b",
                         "messages": [
-                            {"role": "system", "content": f"Sen {SERVER_NAME} sunucusunda yardımcı bir asistan olarak cevap ver. Kullanıcının son mesajları: {context}{owner_note}"},
+                            {"role": "system", "content": system_message},
                             {"role": "user", "content": content}
                         ],
                         "temperature": 0.7,
@@ -187,21 +176,94 @@ async def on_message(message):
                             data = await response.json()
                             reply = data['choices'][0]['message']['content']
                             
+                            # Eğer İngilizce tespit edilirse uyarı ekle
+                            if any(char in reply for char in "abcdefghijklmnopqrstuvwxyz") and len(reply) > 10:
+                                if not any(char in reply for char in "çğıöşü"):
+                                    reply += "\n\n💡 Lütfen Türkçe yazın / Please write in Turkish"
+                            
                             if len(reply) > 2000:
                                 for i in range(0, len(reply), 1900):
                                     await message.channel.send(reply[i:i+1900])
                             else:
                                 await message.channel.send(reply)
                         else:
-                            error_text = await response.text()
                             await message.channel.send(f'❌ API hatası: {response.status}')
                             
-            except aiohttp.ClientError as e:
-                await message.channel.send(f'❌ Bağlantı hatası: {str(e)}')
             except Exception as e:
                 await message.channel.send(f'❌ Hata: {str(e)}')
     
     await bot.process_commands(message)
+
+async def handle_image_request(message, content):
+    """Resim oluşturma isteğini işler"""
+    user_id = message.author.id
+    
+    # Günlük limit kontrolü
+    today = datetime.now().date()
+    if user_id not in image_limits:
+        image_limits[user_id] = {"count": 0, "date": today}
+    
+    if image_limits[user_id]["date"] != today:
+        image_limits[user_id] = {"count": 0, "date": today}
+    
+    if image_limits[user_id]["count"] >= DAILY_IMAGE_LIMIT:
+        await message.channel.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün). Yarın tekrar deneyin.")
+        return
+    
+    # Resim prompt'unu çıkar
+    prompt = content.lower().replace("/resim", "").replace("resim yap", "").replace("draw", "").strip()
+    if not prompt:
+        await message.channel.send("❌ Ne çizmem gerektiğini yazın! Örnek: `/resim kedi`")
+        return
+    
+    # Prompt'u İngilizce'ye çevir (Pollinations.ai İngilizce anlıyor)
+    english_prompt = prompt  # Basit tutalım, kullanıcı İngilizce yazarsa daha iyi olur
+    
+    async with message.channel.typing():
+        try:
+            # Pollinations.ai API'si (ücretsiz)
+            image_url = f"{IMAGE_API_URL}{english_prompt.replace(' ', '%20')}?width=512&height=512&nologo=true"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as response:
+                    if response.status == 200:
+                        # Resmi indir
+                        image_data = await response.read()
+                        
+                        # Discord'a resim gönder
+                        file = discord.File(io.BytesIO(image_data), filename="resim.png")
+                        await message.channel.send(
+                            f"🎨 **İşte resmin!**\nPrompt: `{prompt}`\nAPI: Pollinations.ai (ücretsiz)",
+                            file=file
+                        )
+                        
+                        # Limiti güncelle
+                        image_limits[user_id]["count"] += 1
+                        kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
+                        await message.channel.send(f"📊 Bugün kalan resim hakkınız: {kalan}")
+                    else:
+                        await message.channel.send(f"❌ Resim oluşturulamadı! Hata: {response.status}")
+                        
+        except Exception as e:
+            await message.channel.send(f"❌ Resim hatası: {str(e)}")
+
+@bot.command(name='resim')
+async def image_command(ctx, *, prompt):
+    """Resim oluşturur: !resim kedi"""
+    await handle_image_request(ctx.message, f"/resim {prompt}")
+
+@bot.command(name='limit')
+async def check_limit(ctx):
+    """Kalan resim hakkını gösterir"""
+    user_id = ctx.author.id
+    today = datetime.now().date()
+    
+    if user_id not in image_limits or image_limits[user_id]["date"] != today:
+        kalan = DAILY_IMAGE_LIMIT
+    else:
+        kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
+    
+    await ctx.send(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)")
 
 @bot.command(name='history')
 async def show_history(ctx):
@@ -224,19 +286,6 @@ async def clear_history(ctx):
     else:
         await ctx.send("📭 Zaten hiç mesaj geçmişiniz yok!")
 
-@bot.command(name='fun')
-async def fun_mode(ctx):
-    """Eğlenceli modu açar/kapatır"""
-    await ctx.send("🎉 Eğlenceli mod aktif! Rastgele komik cevaplar verilecek!")
-
-@bot.command(name='curse')
-async def curse_mode(ctx):
-    """Küfürlü modu açar (sadece bot sahibi)"""
-    if ctx.author.id == OWNER_ID:
-        await ctx.send("😈 Küfürlü mod aktif! (Sadece senin için)")
-    else:
-        await ctx.send("❌ Bu komutu sadece bot sahibi kullanabilir!")
-
 @bot.command(name='server')
 async def server_info(ctx):
     """Sunucu bilgisini gösterir"""
@@ -258,27 +307,30 @@ async def ping(ctx):
 @bot.command(name='help_ai')
 async def help_command(ctx):
     help_text = f"""
-🤖 **AI Sohbet Botu - {SERVER_NAME}**
+🤖 **/estanya Bot - {SERVER_NAME}**
 
-**👑 Bot Sahibi:** <@{1482762948106784951}>
+**👑 Bot Sahibi:** <@{OWNER_ID}>
 
 **📝 Özellikler:**
 • 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
-• 🎉 **Eğlenceli Mod:** Rastgele komik cevaplar (%20 şans)
-• 😈 **Küfürlü Mod:** Bot sahibine özel komik küfürler (%30 şans)
-• 💬 **Bağlam:** Son 5 mesajınızı hatırlar
-• 🌐 **HTTP Sunucusu:** Port {PORT} üzerinden sağlık kontrolü
+• 💬 **DM Desteği:** Özel mesajlarda da konuşabilirsiniz
+• 🎨 **Resim Oluşturma:** `/resim` ile ücretsiz resim yapar (Pollinations.ai)
+• 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün
+• 🌐 **Bağlam:** Son 5 mesajınızı hatırlar
+• 🇹🇷 **Türkçe Zorunluluğu:** İngilizce yazarsanız uyarır
 
 **Kullanım:**
 1. **Etiketleme:** Botu etiketleyip soru sorun
-   Örnek: `@bot_adı Nasıl yapabilirim?`
-2. **Özel Mesaj:** Bota doğrudan DM gönderin
+   Örnek: `@estanya Nasıl yapabilirim?`
+2. **Trigger Kelimeler:** "estanya", "bot", "yardım" gibi kelimelerle çağırın
+3. **Özel Mesaj:** Bota doğrudan DM gönderin
+4. **Resim Yapma:** `/resim kedi` veya `!resim kedi`
 
 **Komutlar:**
+• `!resim <açıklama>` - Resim oluşturur
+• `!limit` - Kalan resim hakkını gösterir
 • `!history` - Son 10 mesajınızı gösterir
 • `!clear_history` - Mesaj geçmişinizi temizler
-• `!fun` - Eğlenceli modu açar
-• `!curse` - Küfürlü modu açar (sadece sahip)
 • `!server` - Sunucu bilgisini gösterir
 • `!owner` - Bot sahibini gösterir
 • `!ping` - Bot gecikmesini gösterir
@@ -286,12 +338,12 @@ async def help_command(ctx):
 
 **Sunucu:** {SERVER_NAME}
 **Port:** {PORT}
+**Resim API:** Pollinations.ai (ücretsiz)
     """
     await ctx.send(help_text)
 
 if __name__ == "__main__":
     try:
-        # Bot'u başlat
         bot.run(TOKEN)
     except discord.LoginFailure:
         print("❌ Token hatası! Lütfen token'ınızı kontrol edin.")
