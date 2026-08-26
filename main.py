@@ -4,7 +4,8 @@ import asyncio
 import json
 import os
 import random
-import io
+import io  # BU EKLENDİ
+import base64
 from discord.ext import commands
 from datetime import datetime, timedelta
 
@@ -108,18 +109,18 @@ async def on_message(message):
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_chat_mode = user_chat_mode.get(user_id, False)
     
-    # /resim komutunu kontrol et (slash komut olarak)
-    if message.content.startswith('/resim'):
+    # /resim komutunu kontrol et
+    if message.content.startswith('/resim') or message.content.startswith('!resim'):
         await handle_image_request(message, message.content)
         return
     
     # /konuşma komutunu kontrol et
-    if message.content.startswith('/konuşma'):
+    if message.content.startswith('/konuşma') or message.content.startswith('!konuşma'):
         user_chat_mode[user_id] = True
         await message.channel.send("💬 **Sohbet modu aktif!** Artık her mesajına cevap vereceğim. Kapatmak için `/kapat` yaz.")
         return
     
-    if message.content.startswith('/kapat'):
+    if message.content.startswith('/kapat') or message.content.startswith('!kapat'):
         user_chat_mode[user_id] = False
         await message.channel.send("🔇 **Sohbet modu kapatıldı!** Artık sadece etiketlendiğimde cevap vereceğim.")
         return
@@ -202,7 +203,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 async def handle_image_request(message, content):
-    """Resim oluşturma isteğini işler (DÜZELTİLDİ)"""
+    """Resim oluşturma isteğini işler - DÜZELTİLDİ"""
     user_id = message.author.id
     
     # Günlük limit kontrolü
@@ -217,8 +218,8 @@ async def handle_image_request(message, content):
         await message.channel.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün). Yarın tekrar deneyin.")
         return
     
-    # Resim prompt'unu çıkar - DÜZELTİLDİ
-    prompt = content.replace('/resim', '').strip()
+    # Resim prompt'unu çıkar
+    prompt = content.replace('/resim', '').replace('!resim', '').strip()
     if not prompt:
         await message.channel.send("❌ Ne çizmem gerektiğini yazın! Örnek: `/resim kedi`")
         return
@@ -233,18 +234,27 @@ async def handle_image_request(message, content):
                 async with session.get(image_url) as response:
                     if response.status == 200:
                         image_data = await response.read()
+                        
+                        # Dosya oluştur - io import edildi
                         file = discord.File(io.BytesIO(image_data), filename="resim.png")
-                        await message.channel.send(
-                            f"🎨 **İşte resmin!**\nPrompt: `{prompt}`\nAPI: Pollinations.ai (ücretsiz)",
-                            file=file
+                        
+                        # Embed ile gönder (daha güzel görünüm)
+                        embed = discord.Embed(
+                            title="🎨 Resim Oluşturuldu!",
+                            description=f"**Prompt:** `{prompt}`\n**API:** Pollinations.ai (ücretsiz)",
+                            color=discord.Color.blue()
                         )
+                        embed.set_image(url="attachment://resim.png")
+                        embed.set_footer(text=f"Kalan hak: {DAILY_IMAGE_LIMIT - image_limits[user_id]['count'] - 1}")
+                        
+                        await message.channel.send(embed=embed, file=file)
                         
                         image_limits[user_id]["count"] += 1
-                        kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
-                        await message.channel.send(f"📊 Bugün kalan resim hakkınız: {kalan}")
                     else:
                         await message.channel.send(f"❌ Resim oluşturulamadı! Hata: {response.status}")
                         
+        except discord.Forbidden:
+            await message.channel.send("❌ **Yetki hatası!** Botun resim gönderme izni yok. Lütfen bot'a 'Dosya Ekle' ve 'Embed Bağlantıları' izinlerini verin.")
         except Exception as e:
             await message.channel.send(f"❌ Resim hatası: {str(e)}")
 
@@ -253,7 +263,7 @@ async def handle_image_request(message, content):
 @bot.command(name='resim')
 async def image_command(ctx, *, prompt):
     """Resim oluşturur: !resim kedi"""
-    await handle_image_request(ctx.message, f"/resim {prompt}")
+    await handle_image_request(ctx.message, f"!resim {prompt}")
 
 @bot.command(name='konuşma')
 async def chat_mode_command(ctx):
@@ -332,18 +342,17 @@ async def help_command(ctx):
 • 🎨 **/resim:** Ücretsiz resim oluşturma (Pollinations.ai)
 • 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün
 • 🌐 **Bağlam:** Son 5 mesajınızı hatırlar
-• 🇹🇷 **Türkçe Zorunluluğu:** İngilizce yazarsanız uyarır
 
 **Kullanım:**
-1. **/konuşma** - Sohbet modunu açar (her mesaja cevap verir)
+1. **/konuşma** - Sohbet modunu açar
 2. **/kapat** - Sohbet modunu kapatır
 3. **/resim <açıklama>** - Resim oluşturur
 4. **@estanya** - Botu etiketleyip soru sorun
 
 **Komutlar:**
-• `/konuşma` - Sohbet modunu açar
-• `/kapat` - Sohbet modunu kapatır
-• `/resim <açıklama>` - Resim oluşturur
+• `/konuşma` veya `!konuşma` - Sohbet modunu açar
+• `/kapat` veya `!kapat` - Sohbet modunu kapatır
+• `/resim <açıklama>` veya `!resim <açıklama>` - Resim oluşturur
 • `!limit` - Kalan resim hakkını gösterir
 • `!history` - Son 10 mesajınızı gösterir
 • `!clear_history` - Mesaj geçmişinizi temizler
@@ -353,7 +362,6 @@ async def help_command(ctx):
 • `!help_ai` - Bu yardım mesajını gösterir
 
 **Sunucu:** {SERVER_NAME}
-**Port:** {PORT}
     """
     await ctx.send(help_text)
 
