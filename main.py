@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import random
+import socket
 from discord.ext import commands
 
 # Environment variables'dan oku
@@ -11,11 +12,14 @@ TOKEN = os.getenv('TOKEN') or os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
-# Bot sahibi ID'si (değiştirin!)
-OWNER_ID = 75  # Buraya kendi Discord ID'nizi yazın (sayısal)
+# Bot sahibi ID'si (güncellendi!)
+OWNER_ID = 1482762948106784951
 
 # Sunucu adı
-SERVER_NAME = "Estanya"
+SERVER_NAME = "/Estanya"
+
+# Port ayarı (Render için)
+PORT = int(os.getenv('PORT', 8080))
 
 if not TOKEN:
     raise ValueError("❌ TOKEN environment variable'ı bulunamadı!")
@@ -35,7 +39,12 @@ funny_responses = [
     "😄 Harika bir soru! Cevabı: 42 (her şeyin cevabı)",
     "🤪 Ben bir botum ama sen benden daha bot davranıyorsun!",
     "😂 Bu soruyu cevaplamak için kahve molası veriyorum...",
-    "😅 Bak şimdi, bu soru beni aştı! Ama deneyelim..."
+    "😅 Bak şimdi, bu soru beni aştı! Ama deneyelim...",
+    "🤔 Bu soruyu düşünürken beynim ısındı!",
+    "🎉 Cevap: Sen harikasın! (her soruya uygun)",
+    "🍕 Pizza mı? Hayır, sorunu cevaplıyorum!",
+    "💡 Fikir geldi! Ama sonra unuttum...",
+    "🦄 Tek boynuzlu atlar bu soruyu sever!"
 ]
 
 # Küfürlü mod cevapları (sadece bot sahibine özel)
@@ -43,8 +52,52 @@ curse_responses = [
     "Sana bunun cevabını mı versem? 😏",
     "Yok artık! Bu soruya cevap vermek çok zor! 🤬",
     "Küfür mü edelim? Ben yapmam, ama sen edebilirsin! 😈",
-    "Bak bu soruya cevap vermek için 'sihirli kelime' lazım! 🧙"
+    "Bak bu soruya cevap vermek için 'sihirli kelime' lazım! 🧙",
+    "Bu soruya cevap vermek için 5 dakika mola! ⏰",
+    "Ben botum, sen insansın - bu soruyu sen çöz! 🧠",
+    "Cevap: Küfür etme, gülümse! 😊",
+    "Bu soruyu görünce kahve içmek istedim! ☕",
+    "Sana cevap versem, botluktan çıkarım! 🤖",
+    "Bu soruyu ChatGPT'ye sorsana! 😂"
 ]
+
+# Flask veya basit HTTP sunucusu için (Render'da çalışması için)
+async def run_http_server():
+    """Render'da botun çalıştığını göstermek için basit HTTP sunucusu"""
+    try:
+        # Basit bir HTTP sunucusu başlat
+        import asyncio
+        from aiohttp import web
+        
+        async def health_check(request):
+            return web.Response(text=f"✅ Bot çalışıyor! Sunucu: {SERVER_NAME}, Bot: {bot.user.name}")
+        
+        async def info(request):
+            return web.json_response({
+                "status": "online",
+                "bot_name": bot.user.name if bot.user else "Bilinmiyor",
+                "server": SERVER_NAME,
+                "owner_id": OWNER_ID,
+                "guilds": [guild.name for guild in bot.guilds]
+            })
+        
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_get('/health', health_check)
+        app.router.add_get('/info', info)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, host='0.0.0.0', port=PORT)
+        await site.start()
+        print(f"✅ HTTP sunucusu başlatıldı: http://0.0.0.0:{PORT}")
+        
+        # Süresiz bekle
+        await asyncio.Event().wait()
+    except ImportError:
+        print("⚠️ aiohttp.web yok, HTTP sunucusu başlatılamadı (sadece bot çalışacak)")
+    except Exception as e:
+        print(f"⚠️ HTTP sunucusu hatası: {e}")
 
 @bot.event
 async def on_ready():
@@ -53,23 +106,20 @@ async def on_ready():
     print(f'🏠 Sunucu: {SERVER_NAME}')
     print(f'👑 Sahip ID: {OWNER_ID}')
     print(f'🔑 Groq API: {"✓" if GROQ_API_KEY else "✗"}')
+    print(f'🌐 Port: {PORT}')
     
     # Botun bulunduğu sunucuları listele
     for guild in bot.guilds:
         print(f'📌 Sunucu: {guild.name} (ID: {guild.id})')
+    
+    # HTTP sunucusunu başlat (Render için)
+    asyncio.create_task(run_http_server())
 
 @bot.event
 async def on_message(message):
     # Botun kendi mesajlarını yoksay
     if message.author.bot:
         return
-    
-    # Sadece "Estanya" sunucusunda çalış (isteğe bağlı)
-    if message.guild and message.guild.name != SERVER_NAME:
-        # Eğer özel mesaj ise veya farklı sunucuda çalışmasını istiyorsanız bu kısmı yorum satırı yapın
-        # await bot.process_commands(message)
-        # return
-        pass  # Şimdilik tüm sunucularda çalışsın
     
     # Kullanıcı mesaj geçmişini güncelle
     user_id = message.author.id
@@ -113,11 +163,14 @@ async def on_message(message):
                 history = user_history.get(user_id, [])[-5:]  # Son 5 mesaj
                 context = "\n".join(history) if history else ""
                 
+                # Bot sahibine özel mesaj
+                owner_note = f" (Bot sahibisin! Özel yetkilerin var)" if is_owner else ""
+                
                 async with aiohttp.ClientSession() as session:
                     payload = {
                         "model": "openai/gpt-oss-120b",
                         "messages": [
-                            {"role": "system", "content": f"Sen {SERVER_NAME} sunucusunda yardımcı bir asistan olarak cevap ver. Kullanıcının son mesajları: {context}"},
+                            {"role": "system", "content": f"Sen {SERVER_NAME} sunucusunda yardımcı bir asistan olarak cevap ver. Kullanıcının son mesajları: {context}{owner_note}"},
                             {"role": "user", "content": content}
                         ],
                         "temperature": 0.7,
@@ -192,6 +245,11 @@ async def server_info(ctx):
     else:
         await ctx.send("Bu komut sadece sunucularda kullanılabilir!")
 
+@bot.command(name='owner')
+async def owner_info(ctx):
+    """Bot sahibi bilgisini gösterir"""
+    await ctx.send(f"👑 **Bot Sahibi:** <@{OWNER_ID}> (ID: {OWNER_ID})")
+
 @bot.command(name='ping')
 async def ping(ctx):
     latency = round(bot.latency * 1000)
@@ -202,13 +260,14 @@ async def help_command(ctx):
     help_text = f"""
 🤖 **AI Sohbet Botu - {SERVER_NAME}**
 
-**👑 Bot Sahibi:** <@{OWNER_ID}>
+**👑 Bot Sahibi:** <@{1482762948106784951}>
 
 **📝 Özellikler:**
 • 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
 • 🎉 **Eğlenceli Mod:** Rastgele komik cevaplar (%20 şans)
 • 😈 **Küfürlü Mod:** Bot sahibine özel komik küfürler (%30 şans)
 • 💬 **Bağlam:** Son 5 mesajınızı hatırlar
+• 🌐 **HTTP Sunucusu:** Port {PORT} üzerinden sağlık kontrolü
 
 **Kullanım:**
 1. **Etiketleme:** Botu etiketleyip soru sorun
@@ -221,15 +280,18 @@ async def help_command(ctx):
 • `!fun` - Eğlenceli modu açar
 • `!curse` - Küfürlü modu açar (sadece sahip)
 • `!server` - Sunucu bilgisini gösterir
+• `!owner` - Bot sahibini gösterir
 • `!ping` - Bot gecikmesini gösterir
 • `!help_ai` - Bu yardım mesajını gösterir
 
 **Sunucu:** {SERVER_NAME}
+**Port:** {PORT}
     """
     await ctx.send(help_text)
 
 if __name__ == "__main__":
     try:
+        # Bot'u başlat
         bot.run(TOKEN)
     except discord.LoginFailure:
         print("❌ Token hatası! Lütfen token'ınızı kontrol edin.")
