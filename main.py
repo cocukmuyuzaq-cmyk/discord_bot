@@ -4,8 +4,8 @@ import asyncio
 import json
 import os
 import random
-import io  # BU EKLENDİ
-import base64
+import io
+import re
 from discord.ext import commands
 from datetime import datetime, timedelta
 
@@ -14,13 +14,13 @@ TOKEN = os.getenv('TOKEN') or os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
 
-# Bot sahibi ID'si (SENİN VERDİĞİN)
+# Bot sahibi ID'si
 OWNER_ID = 1482762948106784951
 
 # Sunucu adı
 SERVER_NAME = "Estanya"
 
-# Port ayarı (Render için)
+# Port
 PORT = int(os.getenv('PORT', 10000))
 
 if not TOKEN:
@@ -39,22 +39,42 @@ MAX_HISTORY = 50
 image_limits = {}
 DAILY_IMAGE_LIMIT = 5
 
-# Ücretsiz resim API'si
+# Resim API'si
 IMAGE_API_URL = "https://image.pollinations.ai/prompt/"
 
 # Botun cevap vermesi gereken kelimeler
 TRIGGER_WORDS = ["estanya", "bot", "yardım", "merhaba", "hello", "hi", "selam"]
 
-# Kullanıcı konuşma durumu (sohbet modu)
-user_chat_mode = {}  # {user_id: True/False}
+# Kullanıcı konuşma durumu
+user_chat_mode = {}
+
+async def translate_to_english(text):
+    """Google Translate API ile Türkçe'yi İngilizce'ye çevirir"""
+    try:
+        # Google Translate ücretsiz API
+        translate_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=tr&tl=en&dt=t&q={text.replace(' ', '%20')}"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(translate_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Çeviri sonucunu al
+                    translated = data[0][0][0]
+                    return translated
+                else:
+                    # Çeviri başarısız olursa orijinal metni kullan
+                    return text
+    except:
+        # Hata durumunda orijinal metni kullan
+        return text
 
 @bot.event
 async def on_ready():
-    print(f'✅ /estanya bot olarak giriş yapıldı!')
+    print(f'✅ Estanya Bot olarak giriş yapıldı!')
     print(f'📊 Bot ID: {bot.user.id}')
     print(f'👑 Sahip ID: {OWNER_ID}')
     print(f'🌐 Port: {PORT}')
-    print(f'🎨 Resim API: Pollinations.ai (ücretsiz)')
+    print(f'🏠 Sunucu: {SERVER_NAME}')
     
     for guild in bot.guilds:
         print(f'📌 Sunucu: {guild.name} (ID: {guild.id})')
@@ -66,12 +86,12 @@ async def run_http_server():
         from aiohttp import web
         
         async def health_check(request):
-            return web.Response(text=f"✅ /estanya bot çalışıyor! Sunucu: {SERVER_NAME}")
+            return web.Response(text=f"✅ Estanya Bot çalışıyor! Sunucu: {SERVER_NAME}")
         
         async def info(request):
             return web.json_response({
                 "status": "online",
-                "bot_name": "estanya",
+                "bot_name": "Estanya",
                 "server": SERVER_NAME,
                 "owner_id": OWNER_ID,
                 "guilds": [guild.name for guild in bot.guilds]
@@ -105,16 +125,16 @@ async def on_message(message):
     if len(user_history[user_id]) > MAX_HISTORY:
         user_history[user_id].pop(0)
     
-    # DM veya özel konuşma modu kontrolü
+    # DM veya özel konuşma modu
     is_dm = isinstance(message.channel, discord.DMChannel)
     is_chat_mode = user_chat_mode.get(user_id, False)
     
-    # /resim komutunu kontrol et
+    # /resim komutu
     if message.content.startswith('/resim') or message.content.startswith('!resim'):
         await handle_image_request(message, message.content)
         return
     
-    # /konuşma komutunu kontrol et
+    # /konuşma komutu
     if message.content.startswith('/konuşma') or message.content.startswith('!konuşma'):
         user_chat_mode[user_id] = True
         await message.channel.send("💬 **Sohbet modu aktif!** Artık her mesajına cevap vereceğim. Kapatmak için `/kapat` yaz.")
@@ -134,7 +154,6 @@ async def on_message(message):
     )
     
     if should_respond and not message.content.startswith('!'):
-        # Mesajı temizle
         content = message.content
         if bot.user in message.mentions:
             for mention in message.mentions:
@@ -145,7 +164,6 @@ async def on_message(message):
             await message.channel.send('💭 Bir şey sormak ister misiniz?')
             return
         
-        # Bot sahibi kontrolü
         is_owner = (message.author.id == OWNER_ID)
         
         async with message.channel.typing():
@@ -153,11 +171,10 @@ async def on_message(message):
                 history = user_history.get(user_id, [])[-5:]
                 context = "\n".join(history) if history else ""
                 
-                system_message = f"""Sen /estanya botusun. {SERVER_NAME} sunucusunda yardımcı bir asistansın.
+                system_message = f"""Sen Estanya botusun. {SERVER_NAME} sunucusunda yardımcı bir asistansın.
                 Kullanıcının son mesajları: {context}
                 Bot sahibi: <@{OWNER_ID}>
-                Özelliklerin: DM'de konuşabilirsin, mesaj geçmişini hatırlarsın, /resim ile ücretsiz resim yapabilirsin.
-                Eğer kullanıcı İngilizce bir şey isterse, "Lütfen Türkçe yazın" diyerek Türkçe yazmasını iste.
+                Özelliklerin: DM'de konuşabilirsin, mesaj geçmişini hatırlarsın, resim yapabilirsin.
                 """
                 
                 if is_owner:
@@ -184,26 +201,21 @@ async def on_message(message):
                             data = await response.json()
                             reply = data['choices'][0]['message']['content']
                             
-                            # İngilizce kontrolü
-                            if any(char in reply for char in "abcdefghijklmnopqrstuvwxyz") and len(reply) > 10:
-                                if not any(char in reply for char in "çğıöşü"):
-                                    reply += "\n\n💡 Lütfen Türkçe yazın / Please write in Turkish"
-                            
                             if len(reply) > 2000:
                                 for i in range(0, len(reply), 1900):
                                     await message.channel.send(reply[i:i+1900])
                             else:
                                 await message.channel.send(reply)
                         else:
-                            await message.channel.send(f'❌ API hatası: {response.status}')
+                            await message.channel.send(f'❌ Hata oluştu, lütfen tekrar deneyin.')
                             
             except Exception as e:
-                await message.channel.send(f'❌ Hata: {str(e)}')
+                await message.channel.send(f'❌ Bir hata oluştu, lütfen tekrar deneyin.')
     
     await bot.process_commands(message)
 
 async def handle_image_request(message, content):
-    """Resim oluşturma isteğini işler - DÜZELTİLDİ"""
+    """Resim oluşturma isteğini işler - Google Translate ile çeviri yapar"""
     user_id = message.author.id
     
     # Günlük limit kontrolü
@@ -226,8 +238,11 @@ async def handle_image_request(message, content):
     
     async with message.channel.typing():
         try:
+            # Google Translate ile Türkçe'yi İngilizce'ye çevir
+            english_prompt = await translate_to_english(prompt)
+            
             # URL encode yap
-            encoded_prompt = prompt.replace(' ', '%20')
+            encoded_prompt = english_prompt.replace(' ', '%20')
             image_url = f"{IMAGE_API_URL}{encoded_prompt}?width=512&height=512&nologo=true"
             
             async with aiohttp.ClientSession() as session:
@@ -235,13 +250,11 @@ async def handle_image_request(message, content):
                     if response.status == 200:
                         image_data = await response.read()
                         
-                        # Dosya oluştur - io import edildi
                         file = discord.File(io.BytesIO(image_data), filename="resim.png")
                         
-                        # Embed ile gönder (daha güzel görünüm)
                         embed = discord.Embed(
-                            title="🎨 Resim Oluşturuldu!",
-                            description=f"**Prompt:** `{prompt}`\n**API:** Pollinations.ai (ücretsiz)",
+                            title="🎨 Estanya Resim Oluşturdu!",
+                            description=f"**İstediğin:** `{prompt}`",
                             color=discord.Color.blue()
                         )
                         embed.set_image(url="attachment://resim.png")
@@ -251,12 +264,12 @@ async def handle_image_request(message, content):
                         
                         image_limits[user_id]["count"] += 1
                     else:
-                        await message.channel.send(f"❌ Resim oluşturulamadı! Hata: {response.status}")
+                        await message.channel.send(f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
                         
         except discord.Forbidden:
-            await message.channel.send("❌ **Yetki hatası!** Botun resim gönderme izni yok. Lütfen bot'a 'Dosya Ekle' ve 'Embed Bağlantıları' izinlerini verin.")
+            await message.channel.send("❌ **Yetki hatası!** Botun resim gönderme izni yok.")
         except Exception as e:
-            await message.channel.send(f"❌ Resim hatası: {str(e)}")
+            await message.channel.send(f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
 
 # ----- KOMUTLAR -----
 
@@ -332,22 +345,22 @@ async def ping(ctx):
 @bot.command(name='help_ai')
 async def help_command(ctx):
     help_text = f"""
-🤖 **/estanya Bot - {SERVER_NAME}**
+🤖 **Estanya Bot**
 
 **👑 Bot Sahibi:** <@{OWNER_ID}>
 
 **📝 Özellikler:**
 • 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
-• 💬 **/konuşma Modu:** Sürekli sohbet modu (aç/kapat)
-• 🎨 **/resim:** Ücretsiz resim oluşturma (Pollinations.ai)
+• 💬 **Sohbet Modu:** Sürekli sohbet modu (aç/kapat)
+• 🎨 **Resim Oluşturma:** Ücretsiz resim yapar
 • 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün
-• 🌐 **Bağlam:** Son 5 mesajınızı hatırlar
+• 🌐 **Otomatik Çeviri:** Türkçe prompt'ları İngilizce'ye çevirir
 
 **Kullanım:**
-1. **/konuşma** - Sohbet modunu açar
-2. **/kapat** - Sohbet modunu kapatır
-3. **/resim <açıklama>** - Resim oluşturur
-4. **@estanya** - Botu etiketleyip soru sorun
+• `/konuşma` - Sohbet modunu açar
+• `/kapat` - Sohbet modunu kapatır
+• `/resim <açıklama>` - Resim oluşturur
+• `@Estanya` - Botu etiketleyip soru sorun
 
 **Komutlar:**
 • `/konuşma` veya `!konuşma` - Sohbet modunu açar
