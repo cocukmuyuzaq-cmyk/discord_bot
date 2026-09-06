@@ -5,7 +5,7 @@ import json
 import os
 import random
 import io
-import re
+import base64
 from discord.ext import commands
 from datetime import datetime, timedelta
 from discord import app_commands
@@ -14,6 +14,10 @@ from discord import app_commands
 TOKEN = os.getenv('TOKEN') or os.getenv('DISCORD_TOKEN')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY')
 GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions'
+
+# DeAPI API Bilgileri - ENVIRONMENT'DAN OKU
+DEAPI_API_KEY = os.getenv('DEAPI_API_KEY')
+DEAPI_API_URL = "https://api.deapi.ai/api/v2/images/generations"
 
 # Bot sahibi ID'si
 OWNER_ID = 1482762948106784951
@@ -28,6 +32,8 @@ if not TOKEN:
     raise ValueError("❌ TOKEN environment variable'ı bulunamadı!")
 if not GROQ_API_KEY:
     raise ValueError("❌ GROQ_API_KEY environment variable'ı bulunamadı!")
+if not DEAPI_API_KEY:
+    raise ValueError("❌ DEAPI_API_KEY environment variable'ı bulunamadı! Render'a eklemeyi unutma!")
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -36,15 +42,12 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 user_history = {}
 MAX_HISTORY = 50
 
-# Resim oluşturma limiti
+# Resim oluşturma limiti (günlük)
 image_limits = {}
-DAILY_IMAGE_LIMIT = 5
+DAILY_IMAGE_LIMIT = 20
 
 # Abonelik sistemi
-subscriptions = {}  # {user_id: {"type": "gold"/"premium"/"free", "expiry": timestamp}}
-
-# Resim API'si
-IMAGE_API_URL = "https://image.pollinations.ai/prompt/"
+subscriptions = {}
 
 # Botun cevap vermesi gereken kelimeler
 TRIGGER_WORDS = ["estanya", "bot", "yardım", "merhaba", "hello", "hi", "selam"]
@@ -52,9 +55,30 @@ TRIGGER_WORDS = ["estanya", "bot", "yardım", "merhaba", "hello", "hi", "selam"]
 # Kullanıcı konuşma durumu
 user_chat_mode = {}
 
+# Kullanıcı profilleri
+user_profiles = {}
+
+# Eğlence cevapları
+fun_responses = [
+    "😄 Bunu mu sordun? Vay be!",
+    "🤔 Hmm, ilginç bir soru!",
+    "😂 Tamam, bu soruyu beğendim!",
+    "😎 Estanya bu soruyu çözer!",
+    "🎉 Harika bir soru!",
+    "💪 Bu soru Estanya'ya göre!",
+    "🤗 Sorunun cevabı burada!",
+    "🌟 Estanya her zaman yardımcı!",
+    "🔥 Bu soru ateşli!",
+    "🎯 Tam isabet!"
+]
+
 async def translate_to_english(text):
     """Google Translate API ile Türkçe'yi İngilizce'ye çevirir"""
     try:
+        text = text.strip()
+        if not text:
+            return text
+        
         translate_url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=tr&tl=en&dt=t&q={text.replace(' ', '%20')}"
         
         async with aiohttp.ClientSession() as session:
@@ -75,11 +99,12 @@ async def on_ready():
     print(f'👑 Sahip ID: {OWNER_ID}')
     print(f'🌐 Port: {PORT}')
     print(f'🏠 Sunucu: {SERVER_NAME}')
+    print(f'🎨 Resim Motoru: DeAPI - Flux_2_Klein_4B_BF16')
+    print(f'🔑 DeAPI Key: {"✅ Var" if DEAPI_API_KEY else "❌ Yok"}')
     
     for guild in bot.guilds:
         print(f'📌 Sunucu: {guild.name} (ID: {guild.id})')
     
-    # Slash komutları senkronize et
     try:
         synced = await bot.tree.sync()
         print(f"✅ {len(synced)} slash komut senkronize edildi!")
@@ -101,7 +126,8 @@ async def run_http_server():
                 "bot_name": "Estanya",
                 "server": SERVER_NAME,
                 "owner_id": OWNER_ID,
-                "guilds": [guild.name for guild in bot.guilds]
+                "guilds": [guild.name for guild in bot.guilds],
+                "image_engine": "DeAPI - Flux_2_Klein_4B_BF16"
             })
         
         app = web.Application()
@@ -123,8 +149,8 @@ async def on_message(message):
     if message.author.bot:
         return
     
-    # Kullanıcı mesaj geçmişini güncelle
     user_id = message.author.id
+    
     if user_id not in user_history:
         user_history[user_id] = []
     
@@ -132,312 +158,263 @@ async def on_message(message):
     if len(user_history[user_id]) > MAX_HISTORY:
         user_history[user_id].pop(0)
     
-    # DM veya özel konuşma modu
     is_dm = isinstance(message.channel, discord.DMChannel)
-    is_chat_mode = user_chat_mode.get(user_id, False)
+    is_chat_mode = user_chat_mode.get(user_id, {}).get("active", False)
     
-    # Yanıt verme koşulları (slash komutlar hariç)
-    if not message.content.startswith('/'):
-        should_respond = (
-            is_chat_mode or
-            is_dm or
-            bot.user in message.mentions or
-            any(word in message.content.lower() for word in TRIGGER_WORDS)
-        )
+    should_respond = (
+        is_chat_mode or
+        is_dm or
+        bot.user in message.mentions or
+        any(word in message.content.lower() for word in TRIGGER_WORDS)
+    )
+    
+    if should_respond and not message.content.startswith('/') and not message.content.startswith('!'):
+        content = message.content
+        if bot.user in message.mentions:
+            for mention in message.mentions:
+                content = content.replace(f'<@{mention.id}>', '').replace(f'<@!{mention.id}>', '')
+        content = content.strip()
         
-        if should_respond and not message.content.startswith('!'):
-            content = message.content
-            if bot.user in message.mentions:
-                for mention in message.mentions:
-                    content = content.replace(f'<@{mention.id}>', '').replace(f'<@!{mention.id}>', '')
-            content = content.strip()
-            
-            if not content:
-                await message.channel.send('💭 Bir şey sormak ister misiniz?')
-                return
-            
-            is_owner = (message.author.id == OWNER_ID)
-            
-            async with message.channel.typing():
-                try:
-                    history = user_history.get(user_id, [])[-5:]
-                    context = "\n".join(history) if history else ""
+        if not content:
+            await message.channel.send('💭 Bir şey sormak ister misiniz?')
+            return
+        
+        is_owner = (message.author.id == OWNER_ID)
+        
+        if random.random() < 0.1:
+            await message.channel.send(random.choice(fun_responses))
+            return
+        
+        async with message.channel.typing():
+            try:
+                history = user_history.get(user_id, [])[-5:]
+                context = "\n".join(history) if history else ""
+                
+                system_message = f"""Sen Estanya botusun. {SERVER_NAME} sunucusunda yardımcı bir asistansın.
+                Kullanıcının son mesajları: {context}
+                Bot sahibi: <@{OWNER_ID}>
+                """
+                
+                if is_owner:
+                    system_message += " (Bot sahibisin, özel yetkilerin var!)"
+                
+                async with aiohttp.ClientSession() as session:
+                    payload = {
+                        "model": "openai/gpt-oss-120b",
+                        "messages": [
+                            {"role": "system", "content": system_message},
+                            {"role": "user", "content": content}
+                        ],
+                        "temperature": 0.7,
+                        "max_tokens": 1000
+                    }
                     
-                    system_message = f"""Sen Estanya botusun. {SERVER_NAME} sunucusunda yardımcı bir asistansın.
-                    Kullanıcının son mesajları: {context}
-                    Bot sahibi: <@{OWNER_ID}>
-                    Özelliklerin: DM'de konuşabilirsin, mesaj geçmişini hatırlarsın, resim yapabilirsin.
-                    """
+                    headers = {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {GROQ_API_KEY}"
+                    }
                     
-                    if is_owner:
-                        system_message += " (Bot sahibisin, özel yetkilerin var!)"
-                    
-                    async with aiohttp.ClientSession() as session:
-                        payload = {
-                            "model": "openai/gpt-oss-120b",
-                            "messages": [
-                                {"role": "system", "content": system_message},
-                                {"role": "user", "content": content}
-                            ],
-                            "temperature": 0.7,
-                            "max_tokens": 1000
-                        }
-                        
-                        headers = {
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {GROQ_API_KEY}"
-                        }
-                        
-                        async with session.post(GROQ_API_URL, json=payload, headers=headers) as response:
-                            if response.status == 200:
-                                data = await response.json()
-                                reply = data['choices'][0]['message']['content']
-                                
-                                if len(reply) > 2000:
-                                    for i in range(0, len(reply), 1900):
-                                        await message.channel.send(reply[i:i+1900])
-                                else:
-                                    await message.channel.send(reply)
+                    async with session.post(GROQ_API_URL, json=payload, headers=headers) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            reply = data['choices'][0]['message']['content']
+                            
+                            if len(reply) > 2000:
+                                for i in range(0, len(reply), 1900):
+                                    await message.channel.send(reply[i:i+1900])
                             else:
-                                await message.channel.send(f'❌ Hata oluştu, lütfen tekrar deneyin.')
-                                
-                except Exception as e:
-                    await message.channel.send(f'❌ Bir hata oluştu, lütfen tekrar deneyin.')
+                                await message.channel.send(reply)
+                        else:
+                            await message.channel.send(f'❌ Hata oluştu, lütfen tekrar deneyin.')
+                            
+            except Exception as e:
+                await message.channel.send(f'❌ Bir hata oluştu, lütfen tekrar deneyin.')
     
     await bot.process_commands(message)
 
 async def handle_image_request(interaction, prompt):
-    """Resim oluşturma isteğini işler - Slash komut için"""
+    """DeAPI ile resim oluşturur"""
     user_id = interaction.user.id
     
-    # Abonelik kontrolü
-    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
+    # Günlük limit kontrolü
+    today = datetime.now().date()
+    if user_id not in image_limits:
+        image_limits[user_id] = {"count": 0, "date": today}
     
-    # Free kullanıcılar için limit
-    if sub_info["type"] == "free":
-        today = datetime.now().date()
-        if user_id not in image_limits:
-            image_limits[user_id] = {"count": 0, "date": today}
-        
-        if image_limits[user_id]["date"] != today:
-            image_limits[user_id] = {"count": 0, "date": today}
-        
-        if image_limits[user_id]["count"] >= DAILY_IMAGE_LIMIT:
-            await interaction.followup.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün).\n📌 Daha fazla resim için `/abonelik` yazın.")
-            return
+    if image_limits[user_id]["date"] != today:
+        image_limits[user_id] = {"count": 0, "date": today}
     
-    # "Resminiz Hazırlanıyor..." mesajı
-    await interaction.followup.send("🎨 **Resminiz Hazırlanıyor...**\n⏳ Bu işlem birkaç saniye sürebilir...")
+    if image_limits[user_id]["count"] >= DAILY_IMAGE_LIMIT:
+        await interaction.followup.send(f"⚠️ Günlük resim limitine ulaştınız! ({DAILY_IMAGE_LIMIT} resim/gün).")
+        return
+    
+    prompt = prompt.strip()
+    if len(prompt) < 2:
+        await interaction.followup.send("❌ Lütfen daha açıklayıcı bir şey yazın! Örnek: `/resim siyah spor araba`")
+        return
+    
+    # Hazırlanıyor mesajı
+    await interaction.followup.send("🎨 **Resminiz Hazırlanıyor...**\n⏳ DeAPI ile oluşturuluyor...")
     
     try:
-        # 5 dakika timeout ile resim oluştur
-        async with asyncio.timeout(300):  # 5 dakika
-            # Google Translate ile Türkçe'yi İngilizce'ye çevir
+        async with asyncio.timeout(60):
+            # Türkçe'yi İngilizce'ye çevir
             english_prompt = await translate_to_english(prompt)
             
-            # URL encode yap
-            encoded_prompt = english_prompt.replace(' ', '%20')
-            image_url = f"{IMAGE_API_URL}{encoded_prompt}?width=512&height=512&nologo=true"
+            if not english_prompt or english_prompt == prompt:
+                english_prompt = prompt
+            
+            # DeAPI'ye istek
+            headers = {
+                "accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {DEAPI_API_KEY}"
+            }
+            
+            payload = {
+                "prompt": english_prompt,
+                "model": "Flux_2_Klein_4B_BF16",
+                "width": 1024,
+                "height": 1024,
+                "steps": 4,
+                "seed": random.randint(1, 999999999)
+            }
             
             async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as response:
+                async with session.post(DEAPI_API_URL, json=payload, headers=headers) as response:
                     if response.status == 200:
-                        image_data = await response.read()
+                        data = await response.json()
                         
-                        file = discord.File(io.BytesIO(image_data), filename="resim.png")
+                        if "data" in data and len(data["data"]) > 0:
+                            image_data_b64 = data["data"][0].get("b64_json")
+                            if image_data_b64:
+                                image_bytes = base64.b64decode(image_data_b64)
+                                file = discord.File(io.BytesIO(image_bytes), filename="resim.png")
+                                
+                                embed = discord.Embed(
+                                    title="🎨 Estanya Resim Oluşturdu!",
+                                    description=f"**İstediğin:** `{prompt}`\n**Motor:** Flux_2_Klein_4B_BF16 (DeAPI)",
+                                    color=discord.Color.gold()
+                                )
+                                embed.set_image(url="attachment://resim.png")
+                                embed.set_footer(text=f"Kalan hak: {DAILY_IMAGE_LIMIT - image_limits[user_id]['count'] - 1} / {DAILY_IMAGE_LIMIT} (günlük)")
+                                
+                                await interaction.edit_original_response(content=None, embed=embed, attachments=[file])
+                                
+                                image_limits[user_id]["count"] += 1
+                                return
+                            else:
+                                image_url = data["data"][0].get("url")
+                                if image_url:
+                                    async with session.get(image_url) as img_response:
+                                        if img_response.status == 200:
+                                            image_data = await img_response.read()
+                                            file = discord.File(io.BytesIO(image_data), filename="resim.png")
+                                            
+                                            embed = discord.Embed(
+                                                title="🎨 Estanya Resim Oluşturdu!",
+                                                description=f"**İstediğin:** `{prompt}`\n**Motor:** Flux_2_Klein_4B_BF16 (DeAPI)",
+                                                color=discord.Color.gold()
+                                            )
+                                            embed.set_image(url="attachment://resim.png")
+                                            embed.set_footer(text=f"Kalan hak: {DAILY_IMAGE_LIMIT - image_limits[user_id]['count'] - 1} / {DAILY_IMAGE_LIMIT} (günlük)")
+                                            
+                                            await interaction.edit_original_response(content=None, embed=embed, attachments=[file])
+                                            
+                                            image_limits[user_id]["count"] += 1
+                                            return
                         
-                        # Abonelik tipine göre embed rengi
-                        if sub_info["type"] == "gold":
-                            color = discord.Color.gold()
-                            sub_text = "👑 Gold Üye"
-                        elif sub_info["type"] == "premium":
-                            color = discord.Color.purple()
-                            sub_text = "💎 Premium Üye"
-                        else:
-                            color = discord.Color.blue()
-                            sub_text = "📌 Free Üye"
-                        
-                        embed = discord.Embed(
-                            title="🎨 Estanya Resim Oluşturdu!",
-                            description=f"**İstediğin:** `{prompt}`\n**Abonelik:** {sub_text}",
-                            color=color
-                        )
-                        embed.set_image(url="attachment://resim.png")
-                        
-                        # Kalan hak
-                        if sub_info["type"] == "free":
-                            kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"] - 1
-                            embed.set_footer(text=f"Kalan hak: {kalan} / {DAILY_IMAGE_LIMIT} (günlük)")
-                        else:
-                            embed.set_footer(text="🌟 Sınırsız resim hakkı!")
-                        
-                        await interaction.edit_original_response(content=None, embed=embed, attachments=[file])
-                        
-                        # Limiti güncelle (sadece free kullanıcılar için)
-                        if sub_info["type"] == "free":
-                            image_limits[user_id]["count"] += 1
+                        await interaction.edit_original_response(content="❌ Resim verisi alınamadı, lütfen tekrar deneyin.")
                     else:
-                        await interaction.edit_original_response(content="❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
+                        error_text = await response.text()
+                        await interaction.edit_original_response(content=f"❌ API hatası: {response.status}")
                         
     except asyncio.TimeoutError:
-        await interaction.edit_original_response(content="⏰ **Resim oluşturma iptal edildi!**\n5 dakikadan uzun sürdüğü için işlem iptal edildi. Lütfen tekrar deneyin.")
+        await interaction.edit_original_response(content="⏰ **Zaman aşımı!** 60 saniye doldu, lütfen tekrar deneyin.")
     except Exception as e:
         await interaction.edit_original_response(content=f"❌ Resim oluşturulamadı, lütfen tekrar deneyin.")
 
 # ----- SLASH KOMUTLAR -----
 
-@bot.tree.command(name="resim", description="AI ile resim oluşturur")
-@app_commands.describe(prompt="Ne çizmesini istediğinizi yazın (örn: siyah araba)")
+@bot.tree.command(name="resim", description="AI ile resim oluşturur (DeAPI)")
+@app_commands.describe(prompt="Ne çizmesini istediğinizi yazın")
 async def slash_resim(interaction: discord.Interaction, prompt: str):
-    """/resim komutu - Her yerde kullanılabilir"""
     await interaction.response.defer()
     await handle_image_request(interaction, prompt)
 
 @bot.tree.command(name="konuşma", description="Sohbet modunu açar/kapatır")
 async def slash_konusma(interaction: discord.Interaction):
-    """/konuşma komutu - Her yerde kullanılabilir"""
     user_id = interaction.user.id
-    current_mode = user_chat_mode.get(user_id, False)
+    
+    if user_id not in user_chat_mode:
+        user_chat_mode[user_id] = {"active": False, "channel_id": None}
+    
+    current_mode = user_chat_mode[user_id]["active"]
     
     if current_mode:
-        user_chat_mode[user_id] = False
-        await interaction.response.send_message("🔇 **Sohbet modu kapatıldı!** Artık sadece etiketlendiğimde cevap vereceğim.")
+        user_chat_mode[user_id] = {"active": False, "channel_id": None}
+        embed = discord.Embed(title="🔇 Sohbet Modu Kapatıldı", color=discord.Color.red())
+        await interaction.response.send_message(embed=embed)
     else:
-        user_chat_mode[user_id] = True
-        await interaction.response.send_message("💬 **Sohbet modu aktif!** Artık her mesajına cevap vereceğim. Kapatmak için `/konuşma` yaz.")
-
-@bot.tree.command(name="abonelik", description="Abonelik bilgilerini gösterir")
-async def slash_abonelik(interaction: discord.Interaction):
-    """/abonelik komutu - Yakında"""
-    user_id = interaction.user.id
-    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
-    
-    embed = discord.Embed(
-        title="📋 Estanya Abonelik Sistemi",
-        description="**Yakında!** 🚀",
-        color=discord.Color.gold()
-    )
-    embed.add_field(
-        name="📌 Mevcut Planınız",
-        value=f"**{sub_info['type'].upper()}**",
-        inline=False
-    )
-    embed.add_field(
-        name="🌟 Yakında Gelecek Özellikler",
-        value="• Sınırsız resim oluşturma\n• Özel kalite seçenekleri\n• Öncelikli işlem\n• Özel destek",
-        inline=False
-    )
-    embed.add_field(
-        name="📅 Tarih",
-        value="**Yakında duyurulacak!**",
-        inline=False
-    )
-    embed.set_footer(text="Estanya Bot | Abonelik sistemi hazırlanıyor...")
-    
-    await interaction.response.send_message(embed=embed)
+        user_chat_mode[user_id] = {"active": True, "channel_id": interaction.channel_id}
+        embed = discord.Embed(
+            title="💬 Sohbet Modu Aktif!",
+            description="Artık her mesajına cevap vereceğim! Kapatmak için `/konuşma` yaz.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="limit", description="Kalan resim hakkını gösterir")
 async def slash_limit(interaction: discord.Interaction):
-    """/limit komutu"""
     user_id = interaction.user.id
-    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
-    
-    if sub_info["type"] != "free":
-        await interaction.response.send_message(f"🌟 **{sub_info['type'].upper()}** üyesisiniz! Sınırsız resim hakkınız var!")
-        return
-    
     today = datetime.now().date()
+    
     if user_id not in image_limits or image_limits[user_id]["date"] != today:
         kalan = DAILY_IMAGE_LIMIT
     else:
         kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
     
-    await interaction.response.send_message(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)\n📌 Daha fazla için `/abonelik` yazın.")
-
-@bot.tree.command(name="history", description="Kendi mesaj geçmişini gösterir")
-async def slash_history(interaction: discord.Interaction):
-    """/history komutu"""
-    user_id = interaction.user.id
-    history = user_history.get(user_id, [])
-    if not history:
-        await interaction.response.send_message("📭 Henüz hiç mesaj geçmişiniz yok!")
-    else:
-        history_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(history[-10:])])
-        await interaction.response.send_message(f"📜 **Son {len(history)} mesajınız:**\n{history_text[:1900]}")
-
-@bot.tree.command(name="ping", description="Bot gecikmesini gösterir")
-async def slash_ping(interaction: discord.Interaction):
-    """/ping komutu"""
-    latency = round(bot.latency * 1000)
-    await interaction.response.send_message(f'🏓 Pong! Gecikme: {latency}ms')
+    embed = discord.Embed(
+        title="📊 Resim Hakkınız",
+        description=f"**Kalan:** {kalan} / {DAILY_IMAGE_LIMIT} (günlık)\n**Motor:** Flux_2_Klein_4B_BF16",
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="help", description="Yardım mesajını gösterir")
 async def slash_help(interaction: discord.Interaction):
-    """/help komutu"""
-    help_text = f"""
-🤖 **Estanya Bot**
+    embed = discord.Embed(
+        title="🤖 Estanya Bot",
+        description=f"**👑 Bot Sahibi:** <@{OWNER_ID}>\n**🏠 Sunucu:** {SERVER_NAME}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="📝 Özellikler",
+        value="• 🎨 **Flux_2_Klein_4B_BF16** ile resim (DeAPI)\n• 💬 Sohbet modu\n• 📜 Mesaj geçmişi\n• 📊 Günlük 20 resim limiti\n• 🌐 Otomatik çeviri",
+        inline=False
+    )
+    embed.add_field(
+        name="🔧 Slash Komutlar",
+        value="`/resim` - Resim oluşturur\n`/konuşma` - Sohbet modu\n`/limit` - Kalan hak\n`/help` - Yardım",
+        inline=False
+    )
+    embed.set_footer(text="Estanya Bot | DeAPI ile güçlendirildi!")
+    await interaction.response.send_message(embed=embed)
 
-**👑 Bot Sahibi:** <@{OWNER_ID}>
-
-**📝 Özellikler:**
-• 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
-• 💬 **Sohbet Modu:** Sürekli sohbet modu (aç/kapat)
-• 🎨 **Resim Oluşturma:** Ücretsiz resim yapar
-• 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün (Free)
-• 🌐 **Otomatik Çeviri:** Türkçe prompt'ları İngilizce'ye çevirir
-• ⏰ **5 Dakika Timeout:** Uzun süren işlemler iptal edilir
-• 📋 **Abonelik Sistemi:** Yakında!
-
-**Slash Komutlar (/):**
-• `/resim <açıklama>` - Resim oluşturur
-• `/konuşma` - Sohbet modunu açar/kapatır
-• `/abonelik` - Abonelik bilgilerini gösterir
-• `/limit` - Kalan resim hakkını gösterir
-• `/history` - Son 10 mesajınızı gösterir
-• `/ping` - Bot gecikmesini gösterir
-• `/help` - Bu yardım mesajını gösterir
-
-**Normal Komutlar (!):**
-• `!resim <açıklama>` - Resim oluşturur
-• `!konuşma` - Sohbet modunu açar
-• `!kapat` - Sohbet modunu kapatır
-• `!abonelik` - Abonelik bilgilerini gösterir
-• `!limit` - Kalan resim hakkını gösterir
-• `!history` - Son 10 mesajınızı gösterir
-• `!clear_history` - Mesaj geçmişinizi temizler
-• `!server` - Sunucu bilgisini gösterir
-• `!owner` - Bot sahibini gösterir
-• `!ping` - Bot gecikmesini gösterir
-• `!help_ai` - Bu yardım mesajını gösterir
-
-**Sunucu:** {SERVER_NAME}
-    """
-    await interaction.response.send_message(help_text)
-
-# ----- NORMAL KOMUTLAR (Alternatif) -----
+# ----- NORMAL KOMUTLAR -----
 
 @bot.command(name='resim')
 async def image_command(ctx, *, prompt):
-    """Resim oluşturur: !resim siyah araba"""
-    # Slash komut gibi davranması için
     class FakeInteraction:
         def __init__(self, user, channel):
             self.user = user
             self.channel = channel
-            self.response = None
-            self.followup = None
         
         async def defer(self):
             pass
         
         async def followup(self):
             return self
-        
-        async def send(self, content=None, embed=None, file=None):
-            if embed and file:
-                await self.channel.send(embed=embed, file=file)
-            elif content:
-                await self.channel.send(content)
         
         async def edit_original_response(self, content=None, embed=None, attachments=None):
             if embed and attachments:
@@ -450,149 +427,59 @@ async def image_command(ctx, *, prompt):
 
 @bot.command(name='konuşma')
 async def chat_mode_command(ctx):
-    """Sohbet modunu açar"""
-    user_chat_mode[ctx.author.id] = True
-    await ctx.send("💬 **Sohbet modu aktif!** Artık her mesajına cevap vereceğim. Kapatmak için `!kapat` yaz.")
+    user_id = ctx.author.id
+    if user_id not in user_chat_mode:
+        user_chat_mode[user_id] = {"active": False, "channel_id": None}
+    
+    current_mode = user_chat_mode[user_id]["active"]
+    if current_mode:
+        user_chat_mode[user_id] = {"active": False, "channel_id": None}
+        await ctx.send("🔇 Sohbet modu kapatıldı!")
+    else:
+        user_chat_mode[user_id] = {"active": True, "channel_id": ctx.channel.id}
+        await ctx.send("💬 Sohbet modu aktif! Kapatmak için `!kapat` yaz.")
 
 @bot.command(name='kapat')
 async def close_chat_mode(ctx):
-    """Sohbet modunu kapatır"""
-    user_chat_mode[ctx.author.id] = False
-    await ctx.send("🔇 **Sohbet modu kapatıldı!** Artık sadece etiketlendiğimde cevap vereceğim.")
-
-@bot.command(name='abonelik')
-async def subscription_command(ctx):
-    """Abonelik bilgilerini gösterir"""
     user_id = ctx.author.id
-    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
-    
-    embed = discord.Embed(
-        title="📋 Estanya Abonelik Sistemi",
-        description="**Yakında!** 🚀",
-        color=discord.Color.gold()
-    )
-    embed.add_field(
-        name="📌 Mevcut Planınız",
-        value=f"**{sub_info['type'].upper()}**",
-        inline=False
-    )
-    embed.add_field(
-        name="🌟 Yakında Gelecek Özellikler",
-        value="• Sınırsız resim oluşturma\n• Özel kalite seçenekleri\n• Öncelikli işlem\n• Özel destek",
-        inline=False
-    )
-    embed.add_field(
-        name="📅 Tarih",
-        value="**Yakında duyurulacak!**",
-        inline=False
-    )
-    embed.set_footer(text="Estanya Bot | Abonelik sistemi hazırlanıyor...")
-    
-    await ctx.send(embed=embed)
+    user_chat_mode[user_id] = {"active": False, "channel_id": None}
+    await ctx.send("🔇 Sohbet modu kapatıldı!")
 
 @bot.command(name='limit')
 async def check_limit(ctx):
-    """Kalan resim hakkını gösterir"""
     user_id = ctx.author.id
-    sub_info = subscriptions.get(user_id, {"type": "free", "expiry": None})
-    
-    if sub_info["type"] != "free":
-        await ctx.send(f"🌟 **{sub_info['type'].upper()}** üyesisiniz! Sınırsız resim hakkınız var!")
-        return
-    
     today = datetime.now().date()
+    
     if user_id not in image_limits or image_limits[user_id]["date"] != today:
         kalan = DAILY_IMAGE_LIMIT
     else:
         kalan = DAILY_IMAGE_LIMIT - image_limits[user_id]["count"]
     
-    await ctx.send(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)\n📌 Daha fazla için `/abonelik` yazın.")
-
-@bot.command(name='history')
-async def show_history(ctx):
-    """Kendi mesaj geçmişini gösterir"""
-    user_id = ctx.author.id
-    history = user_history.get(user_id, [])
-    if not history:
-        await ctx.send("📭 Henüz hiç mesaj geçmişiniz yok!")
-    else:
-        history_text = "\n".join([f"{i+1}. {msg}" for i, msg in enumerate(history[-10:])])
-        await ctx.send(f"📜 **Son {len(history)} mesajınız:**\n{history_text[:1900]}")
-
-@bot.command(name='clear_history')
-async def clear_history(ctx):
-    """Mesaj geçmişini temizler"""
-    user_id = ctx.author.id
-    if user_id in user_history:
-        user_history[user_id] = []
-        await ctx.send("🧹 Mesaj geçmişiniz temizlendi!")
-    else:
-        await ctx.send("📭 Zaten hiç mesaj geçmişiniz yok!")
-
-@bot.command(name='server')
-async def server_info(ctx):
-    """Sunucu bilgisini gösterir"""
-    if ctx.guild:
-        await ctx.send(f"🏠 **Sunucu:** {ctx.guild.name}\n👥 **Üye Sayısı:** {ctx.guild.member_count}\n👑 **Sahibim:** <@{OWNER_ID}>")
-    else:
-        await ctx.send("Bu komut sadece sunucularda kullanılabilir!")
-
-@bot.command(name='owner')
-async def owner_info(ctx):
-    """Bot sahibi bilgisini gösterir"""
-    await ctx.send(f"👑 **Bot Sahibi:** <@{OWNER_ID}> (ID: {OWNER_ID})")
-
-@bot.command(name='ping')
-async def ping(ctx):
-    latency = round(bot.latency * 1000)
-    await ctx.send(f'🏓 Pong! Gecikme: {latency}ms')
+    await ctx.send(f"📊 **Kalan resim hakkınız:** {kalan} / {DAILY_IMAGE_LIMIT} (günlük)")
 
 @bot.command(name='help_ai')
 async def help_command(ctx):
-    help_text = f"""
-🤖 **Estanya Bot**
-
-**👑 Bot Sahibi:** <@{OWNER_ID}>
-
-**📝 Özellikler:**
-• 📜 **Mesaj Geçmişi:** Son 50 mesajınızı hatırlar
-• 💬 **Sohbet Modu:** Sürekli sohbet modu (aç/kapat)
-• 🎨 **Resim Oluşturma:** Ücretsiz resim yapar
-• 📊 **Günlük Limit:** {DAILY_IMAGE_LIMIT} resim/gün (Free)
-• 🌐 **Otomatik Çeviri:** Türkçe prompt'ları İngilizce'ye çevirir
-• ⏰ **5 Dakika Timeout:** Uzun süren işlemler iptal edilir
-• 📋 **Abonelik Sistemi:** Yakında!
-
-**Slash Komutlar (/):**
-• `/resim <açıklama>` - Resim oluşturur
-• `/konuşma` - Sohbet modunu açar/kapatır
-• `/abonelik` - Abonelik bilgilerini gösterir
-• `/limit` - Kalan resim hakkını gösterir
-• `/history` - Son 10 mesajınızı gösterir
-• `/ping` - Bot gecikmesini gösterir
-• `/help` - Bu yardım mesajını gösterir
-
-**Normal Komutlar (!):**
-• `!resim <açıklama>` - Resim oluşturur
-• `!konuşma` - Sohbet modunu açar
-• `!kapat` - Sohbet modunu kapatır
-• `!abonelik` - Abonelik bilgilerini gösterir
-• `!limit` - Kalan resim hakkını gösterir
-• `!history` - Son 10 mesajınızı gösterir
-• `!clear_history` - Mesaj geçmişinizi temizler
-• `!server` - Sunucu bilgisini gösterir
-• `!owner` - Bot sahibini gösterir
-• `!ping` - Bot gecikmesini gösterir
-• `!help_ai` - Bu yardım mesajını gösterir
-
-**Sunucu:** {SERVER_NAME}
-    """
-    await ctx.send(help_text)
+    embed = discord.Embed(
+        title="🤖 Estanya Bot",
+        description=f"**👑 Bot Sahibi:** <@{OWNER_ID}>",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="📝 Özellikler",
+        value="• 🎨 **Flux_2_Klein_4B_BF16** ile resim\n• 💬 Sohbet modu\n• 📜 Mesaj geçmişi\n• 📊 Günlük 20 resim limiti",
+        inline=False
+    )
+    embed.add_field(
+        name="🔧 Komutlar",
+        value="`/resim` - Resim oluşturur\n`/konuşma` - Sohbet modu\n`/limit` - Kalan hak\n`/help` - Yardım",
+        inline=False
+    )
+    await ctx.send(embed=embed)
 
 if __name__ == "__main__":
     try:
         bot.run(TOKEN)
     except discord.LoginFailure:
-        print("❌ Token hatası! Lütfen token'ınızı kontrol edin.")
+        print("❌ Token hatası!")
     except Exception as e:
         print(f"❌ Bot başlatılamadı: {e}")
